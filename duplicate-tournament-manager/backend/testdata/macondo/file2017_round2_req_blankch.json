@@ -1,0 +1,25 @@
+{
+  "board": {
+    "rows": [
+      "               ",
+      "               ",
+      "               ",
+      "               ",
+      "               ",
+      "               ",
+      "               ",
+      "       [ch]O[RR]I[LL]OS",
+      "               ",
+      "               ",
+      "               ",
+      "               ",
+      "               ",
+      "               ",
+      "               "
+    ]
+  },
+  "rack": "C?SERON",
+  "kwg": "lexica/FILE2017.kwg",
+  "ruleset": "OSPS49"
+}
+

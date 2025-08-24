@@ -1,0 +1,1 @@
+cache - a generic cache for reading files from disk and storing them in memory.

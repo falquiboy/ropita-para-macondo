@@ -1,0 +1,6 @@
+./arith.go
+./doc.go
+./go.go
+./incr.go
+./utils.go
+./asm_vecExp_avx.s

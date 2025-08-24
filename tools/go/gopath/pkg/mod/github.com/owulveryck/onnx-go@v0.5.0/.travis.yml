@@ -1,0 +1,21 @@
+language: go
+sudo: false
+go:
+  - 1.13.x
+
+before_install:
+  - make install
+
+script:
+  - ./scripts/go.test.sh
+  - make coverage
+
+after_success:
+  - bash <(curl -s https://codecov.io/bash)
+
+matrix:
+  include:
+   - os: linux
+     arch: amd64
+   - os: linux
+     arch: arm64

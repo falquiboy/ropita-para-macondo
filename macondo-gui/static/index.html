@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Macondo GUI (Prototype)</title>
+    <style>
+      body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:1.5rem;}
+      .row{display:flex;gap:.75rem;align-items:center;margin:.4rem 0}
+      input,button{padding:.35rem .6rem}
+      .board{display:grid;grid-template-columns:repeat(15,28px);gap:2px;margin-top:1rem}
+      .cell{width:28px;height:28px;background:#f7f7f7;border:1px solid #ddd;display:flex;align-items:center;justify-content:center;font-weight:600}
+      .hud{display:flex;gap:2rem;margin:.5rem 0}
+      pre{background:#111;color:#0f0;padding:.5rem;max-height:240px;overflow:auto}
+    </style>
+  </head>
+  <body>
+    <h1>Macondo GUI (Prototype)</h1>
+    <div class="row">
+      <button id="new">New Game</button>
+      <div class="hud">
+        <div>Player score: <b id="ps">0</b></div>
+        <div>Engine score: <b id="es">0</b></div>
+        <div>Turn: <b id="turn">-</b></div>
+      </div>
+    </div>
+
+    <div class="row">
+      <label>Player rack: <input id="rack" readonly></label>
+      <label>Word: <input id="word" value="AR"/></label>
+      <label>Row: <input id="row" type="number" style="width:4rem" value="7"/></label>
+      <label>Col: <input id="col" type="number" style="width:4rem" value="7"/></label>
+      <label>Dir: <input id="dir" value="H"/></label>
+      <button id="play">Play</button>
+      <button id="engine">Engine Move</button>
+    </div>
+
+    <div class="board" id="board"></div>
+
+    <h3>Events</h3>
+    <pre id="log"></pre>
+
+    <script>
+      const $ = s => document.querySelector(s);
+      const boardEl = $('#board');
+      for (let i=0;i<225;i++){const d=document.createElement('div');d.className='cell';boardEl.appendChild(d)}
+      const log = (o)=>{$('#log').textContent=(typeof o==='string'?o:JSON.stringify(o,null,2))+'\n'+$('#log').textContent}
+      let gid=null;
+
+      function render(st){
+        $('#ps').textContent=st.player_score; $('#es').textContent=st.engine_score; $('#turn').textContent=st.turn;
+        $('#rack').value = st.player_rack || '';
+        const cells = boardEl.children;
+        for(let r=0;r<15;r++){
+          for(let c=0;c<15;c++){
+            cells[r*15+c].textContent = st.board[r][c] || '';
+          }
+        }
+      }
+
+      async function newGame(){
+        const res = await fetch('/api/game/new',{method:'POST'}); const st = await res.json(); gid = st.id; render(st); log({event:'new', id: gid});
+      }
+      async function play(){
+        if(!gid) return; const word=$('#word').value.trim().toUpperCase();
+        const row=parseInt($('#row').value,10)||7; const col=parseInt($('#col').value,10)||7; const dir=$('#dir').value.trim().toUpperCase()[0]||'H';
+        const res=await fetch(`/api/game/${gid}/play`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({word,row,col,dir})});
+        const st=await res.json(); if(st.error){ log(st); return } render(st); log({event:'play',word,row,col,dir});
+      }
+      async function engineMove(){
+        if(!gid) return; const res=await fetch(`/api/game/${gid}/engine`,{method:'POST'}); const st=await res.json(); if(st.error){log(st); return} render(st); log({event:'engine'});
+      }
+
+      $('#new').onclick=newGame; $('#play').onclick=play; $('#engine').onclick=engineMove;
+      // auto start
+      newGame();
+    </script>
+  </body>
+  </html>
+

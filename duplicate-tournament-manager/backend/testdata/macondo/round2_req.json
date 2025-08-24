@@ -1,0 +1,25 @@
+{
+  "board": {
+    "rows": [
+      "               ",
+      "               ",
+      "               ",
+      "               ",
+      "               ",
+      "               ",
+      "               ",
+      "       [CH]O[RR]I[LL]OS",
+      "               ",
+      "               ",
+      "               ",
+      "               ",
+      "               ",
+      "               ",
+      "               "
+    ]
+  },
+  "rack": "C?SERON",
+  "kwg": "FISE2016_converted.kwg",
+  "ruleset": "OSPS49"
+}
+

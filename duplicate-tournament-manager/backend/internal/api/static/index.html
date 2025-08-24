@@ -1,0 +1,703 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Duplicate Tournament Manager</title>
+    <style>
+      :root { --cell-size: 24px; --gap: 2px; --header-h: 18px; --row-label-nudge: -2px; }
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; }
+      .row { display: flex; gap: 1rem; align-items: center; margin-bottom: 0.5rem; }
+      .grid { display: grid; grid-template-columns: repeat(15, var(--cell-size)); gap: var(--gap); margin-top: 0.25rem; }
+      .cell { position: relative; width: var(--cell-size); height: var(--cell-size); box-sizing: border-box; background: #f2f2f2; border: 1px solid #ddd; font-size: 12px; display: flex; align-items: center; justify-content: center; }
+      .cell.start { outline: 2px solid #3b82f6; }
+      .cell .dir-arrow {
+        position: absolute; inset: 0;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 16px; line-height: 1; color: #3b82f6; font-weight: 600;
+        pointer-events: none;
+      }
+      /* Bonus tags */
+      .cell .bonus { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 700; color: #333; opacity: 0.7; }
+      .cell.tw { background: #fdd; }
+      .cell.dw { background: #fce7f3; }
+      .cell.tl { background: #dbeafe; }
+      .cell.dl { background: #cffafe; }
+      .cell.center .star { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #f59e0b; font-size: 14px; opacity: 0.9; }
+      /* Occupied cell highlight (cream background) */
+      .cell.occ { background: #fff4d6; }
+      pre { background: #111; color: #0f0; padding: 0.5rem; max-height: 240px; overflow: auto; }
+      input[type="text"] { padding: 0.25rem 0.5rem; }
+      button { padding: 0.4rem 0.8rem; }
+      .col { display: flex; flex-direction: column; gap: 0.5rem; }
+      /* Rack tiles */
+      .rack { display: flex; gap: 4px; align-items: center; }
+      .tile { min-width: 24px; height: 24px; padding: 0 4px; border-radius: 3px; background: #fff; border: 1px solid #bbb; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; cursor: pointer; user-select: none; }
+      .tile.digraph { min-width: 34px; }
+      .tile.blank { color: #555; font-style: italic; }
+      .tile.selected { outline: 2px solid #10b981; background: #e6fffa; }
+      /* Coordinates (ES: filas letras, columnas números) */
+      .coords-row { display: grid; grid-template-columns: repeat(15, var(--cell-size)); gap: var(--gap); height: var(--header-h); margin-top: 0.25rem; }
+      .coords-col { display: grid; grid-template-rows: repeat(15, var(--cell-size)); gap: var(--gap); margin-right: 4px; }
+      .coord { width: var(--cell-size); height: var(--header-h); font-size: 11px; color: #6b7280; display: flex; align-items: center; justify-content: center; user-select: none; }
+      .coord.col { height: var(--cell-size); transform: translateY(var(--row-label-nudge)); }
+      .coords-spacer { height: var(--header-h); }
+    </style>
+  </head>
+  <body>
+    <h1>Duplicate Tournament Manager (MVP)</h1>
+
+    <h2>Partida vs Bot</h2>
+    <div class="row">
+      <button id="matchCreate">Nueva partida (Hasty)</button>
+      <button id="matchCreateSim">Nueva partida (Sim)</button>
+      <span id="matchInfo"></span>
+    </div>
+    <div class="row">
+      <button id="matchShuffle">Shuffle Rack</button>
+      <button id="matchRecall">Recall (ultimo)</button>
+      <button id="matchRecallAll">Recall (todos)</button>
+      <button id="matchPass">Pasar</button>
+      <button id="matchExchange">Intercambiar</button>
+      <input id="matchExchangeTiles" type="text" placeholder="Tiles a cambiar (ej: AE)" style="width:12rem"/>
+      <button id="matchAIMove">AI mueve</button>
+      <select id="matchAIMode"><option value="static">Hasty</option><option value="sim">Sim</option></select>
+      <button id="matchSubmitPlay" title="Enviar jugada (Enter)">Jugar</button>
+      <label style="display:flex;align-items:center;gap:4px"><input id="matchAutoAI" type="checkbox"/> Auto AI</label>
+    </div>
+    <div class="row">
+      <label>KWG Preset
+        <select id="matchKwgPreset">
+          <option value="">— Auto —</option>
+          <option value="FILE2017.kwg">FILE2017.kwg (repo root)</option>
+          <option value="lexica/FILE2017.kwg">FILE2017.kwg (DUPMAN/lexica)</option>
+          <option value="FISE2016_converted.kwg">FISE2016_converted.kwg (repo root)</option>
+          <option value="/Users/isaacfalconer/DB_sources/gaddag/FISE2016_converted.kwg">FISE2016_converted.kwg (DB_sources)</option>
+        </select>
+      </label>
+    </div>
+    <div class="row">
+      <div style="display:flex;flex-direction:column;margin-right:1px">
+        <div class="coords-spacer"></div>
+        <div class="coords-col" id="matchLeftCoords"></div>
+      </div>
+      <div style="display:flex;flex-direction:column">
+        <div class="coords-row" id="matchTopCoords"></div>
+        <div class="grid" id="matchBoard"></div>
+        <div style="margin-top:4px;font-size:12px;color:#6b7280">Inicio: <span id="matchCoordLabel">—</span></div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="rack">Rack: <div id="matchRack" class="rack" style="margin-left:6px"></div></div>
+      <div style="margin-left:1rem">Score: <span id="matchScore"></span> | Bolsa: <span id="matchBag"></span></div>
+    </div>
+
+    <div class="row">
+      <label>Name <input id="name" type="text" value="Torneo Demo" /></label>
+      <label>Rules <input id="ruleset" type="text" value="OSPS49" /></label>
+      <label>KWG <input id="kwg" type="text" placeholder="/absolute/path/to/your.kwg (optional)" style="width:28rem" /></label>
+      <label>KWG Preset
+        <select id="kwgPreset">
+          <option value="">— Select —</option>
+          <option value="/Users/isaacfalconer/DB_sources/gaddag/FISE2016_converted.kwg">FISE2016_converted.kwg (DB_sources)</option>
+          <option value="FISE2016_converted.kwg">FISE2016_converted.kwg (repo root)</option>
+          <option value="lexica/FILE2017.kwg">FILE2017.kwg (DUPMAN/lexica)</option>
+          <option value="FILE2017.kwg">FILE2017.kwg (repo root)</option>
+        </select>
+      </label>
+      <button id="create">Create Tournament</button>
+    </div>
+
+    <div class="row">
+      <label>Player <input id="player" type="text" value="Ana" /></label>
+      <button id="add">Add Player</button>
+    </div>
+
+    <div class="row">
+      <label>Rack <input id="rack" type="text" value="AEIRST?" /></label>
+      <button id="start">Start Round</button>
+      <button id="close">Close Round</button>
+    </div>
+
+    <div class="row">
+      <label>Move <input id="move" type="text" value="ARIEST" /></label>
+      <button id="submit">Submit Move</button>
+      <button id="standings">Standings</button>
+    </div>
+
+    <div class="row">
+      <button id="refresh">Refresh Board</button>
+      <button id="setBoard">Set Board</button>
+      <button id="genMoves">Generate Moves</button>
+      <label>Engine
+        <select id="engine">
+          <option value="macondo" selected>Macondo</option>
+          <option value="wolges">Wolges</option>
+          <option value="hybrid">Hybrid (Wolges + Macondo equity)</option>
+        </select>
+      </label>
+      <label>Mode
+        <select id="mode">
+          <option value="static" selected>Static</option>
+          <option value="sim">Simulation</option>
+        </select>
+      </label>
+      <label>Top N <input id="topN" type="number" value="25" style="width:5rem" /></label>
+    </div>
+    <div class="row">
+      <div style="display:flex;flex-direction:column;margin-right:1px">
+        <div class="coords-spacer"></div>
+        <div class="coords-col" id="leftCoords"></div>
+      </div>
+      <div style="display:flex;flex-direction:column">
+        <div class="coords-row" id="topCoords"></div>
+        <div class="grid" id="board"></div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="col" style="flex:1">
+        <label>Board rows (15 lines)</label>
+        <textarea id="rows" rows="16" style="width:100%;font-family:monospace"></textarea>
+      </div>
+    </div>
+
+    <h3>Output</h3>
+    <pre id="out"></pre>
+
+    <h3>Top Moves</h3>
+    <div id="moves"></div>
+    <div class="row">
+      <button id="loadKLV2">Load KLV2</button>
+      <span id="klv2Status">KLV2: not loaded</span>
+    </div>
+
+    <script>
+      // ===== Partida vs Bot =====
+      let matchId = null;
+      let matchMode = 'static';
+      let matchBoardEl = null;
+      let matchBoardState = Array(225).fill(' ');
+      let rackTokensArr = []; // current rack tokens (strings, bracket-aware)
+      let rackCounts = {}; // token -> count
+      let rackSelIdx = new Set(); // selected indices for exchange
+      let pendingPlacements = {}; // boardIndex -> token placed from rack
+      let startCell = null; // {row, col}
+      let placeDir = 'H'; // H or V, toggles on subsequent clicks
+      // small typing buffer to allow merging CH/LL/RR
+      let pendingKey = null; // a single uppercase letter waiting to possibly merge
+      let pendingKeyTimer = null;
+      let matchBonusRows = null; // 15 strings from server with bonus codes
+
+      function initMatchBoard() {
+        if (!matchBoardEl) matchBoardEl = document.getElementById('matchBoard');
+        // Render ES coordinates for match board
+        renderCoords('match');
+        matchBoardEl.innerHTML = '';
+        matchBoardEl.style.gridTemplateColumns = 'repeat(15, 24px)';
+        for (let i=0;i<225;i++){
+          const d=document.createElement('div'); d.className='cell'; d.textContent='';
+          d.addEventListener('click', ()=> onMatchCellClick(i));
+          matchBoardEl.appendChild(d);
+        }
+        renderMatchBoard();
+      }
+      function renderCoords(prefix){
+        const top = document.getElementById(prefix+"TopCoords");
+        const left = document.getElementById(prefix+"LeftCoords");
+        if (top){ top.innerHTML=''; for(let c=1;c<=15;c++){ const d=document.createElement('div'); d.className='coord'; d.textContent=String(c); top.appendChild(d);} }
+        if (left){ left.innerHTML=''; for(let r=0;r<15;r++){ const d=document.createElement('div'); d.className='coord col'; d.textContent=String.fromCharCode(65+r); left.appendChild(d);} }
+      }
+      function toCoordES(row,col){ return String.fromCharCode(65+row) + String(col+1); }
+      function bonusAtIndex(i){ if(!matchBonusRows) return null; const r=(i/15)|0, c=i%15; const row=matchBonusRows[r]||''; const ch=row.charAt(c)||' '; switch(ch){ case '-': return 'DW'; case '=': return 'TW'; case '"': return 'TL'; case "'": return 'DL'; case '~': return '4W'; case '^': return '4L'; default: return null; } }
+      function renderMatchBoard(){
+        const cells = matchBoardEl.children;
+        for(let i=0;i<225;i++){
+          const tk = matchBoardState[i] || ' ';
+          const placed = pendingPlacements[i];
+          // reset main text
+          cells[i].textContent = (placed || (tk && tk.trim() ? tk : ''));
+          // remove any previous arrow
+          const prev = cells[i].querySelector('.dir-arrow'); if (prev) prev.remove();
+          cells[i].classList.remove('start');
+          // remove previous bonus/star
+          const prevB = cells[i].querySelector('.bonus'); if (prevB) prevB.remove();
+          const prevS = cells[i].querySelector('.star'); if (prevS) prevS.remove();
+          cells[i].classList.remove('tw','dw','tl','dl','center','occ');
+          // add arrow on start cell
+          if (startCell){
+            const si = startCell.row*15 + startCell.col;
+            if (i === si){
+              cells[i].classList.add('start');
+              const span = document.createElement('span');
+              span.className = 'dir-arrow';
+              span.textContent = (placeDir==='H' ? '→' : '↓');
+              cells[i].appendChild(span);
+            }
+          }
+          // show bonus tag and center star when empty
+          const hasTile = !!(placed || (tk && tk.trim()));
+          if (!hasTile){
+            const r = (i/15)|0, c = i%15;
+            if (r===7 && c===7){
+              cells[i].classList.add('center');
+              const st = document.createElement('span'); st.className='star'; st.textContent='★'; cells[i].appendChild(st);
+            }
+            const tag = bonusAtIndex(i);
+            if (tag){
+              if (tag==='TW') cells[i].classList.add('tw');
+              else if (tag==='DW') cells[i].classList.add('dw');
+              else if (tag==='TL') cells[i].classList.add('tl');
+              else if (tag==='DL') cells[i].classList.add('dl');
+              const b = document.createElement('span'); b.className='bonus'; b.textContent = tag; cells[i].appendChild(b);
+            }
+          } else {
+            // Occupied cell: add cream background
+            cells[i].classList.add('occ');
+          }
+        }
+        // Update coordinate label for current start
+        const lab = document.getElementById('matchCoordLabel');
+        if (lab){
+          if (startCell){ lab.textContent = toCoordES(startCell.row, startCell.col) + ' ' + (placeDir==='H'?'(→)':'(↓)'); }
+          else { lab.textContent = '—'; }
+        }
+      }
+      function setMatchInfo(t){ document.getElementById('matchInfo').textContent = t; }
+      function tokenLabel(tk){
+        if (!tk) return '';
+        if (tk === '?') return '?';
+        if (tk.startsWith('[') && tk.endsWith(']')) return tk.slice(1,-1); // CH/LL/RR or lowercase on blank
+        return tk;
+      }
+      function renderRack(){
+        const el = document.getElementById('matchRack');
+        if (!el) return;
+        el.innerHTML = '';
+        rackTokensArr.forEach((tk, idx)=>{
+          const sp = document.createElement('span');
+          const lbl = tokenLabel(tk);
+          sp.className = 'tile' + ((lbl.length>1)?' digraph':'') + ((tk==='?')?' blank':'') + (rackSelIdx.has(idx)?' selected':'');
+          sp.textContent = lbl.toUpperCase();
+          sp.title = 'Click: ' + (startCell? 'colocar':'seleccionar para intercambio');
+          sp.addEventListener('click', (ev)=>{
+            if (startCell){
+              tryPlaceToken(tk);
+              return;
+            }
+            if (rackSelIdx.has(idx)) rackSelIdx.delete(idx); else rackSelIdx.add(idx);
+            // Reflect into exchange input
+            const tiles = Array.from(rackSelIdx).sort((a,b)=>a-b).map(i=>rackTokensArr[i]).join('');
+            document.getElementById('matchExchangeTiles').value = tiles;
+            renderRack();
+          });
+          el.appendChild(sp);
+        });
+      }
+      function setMatchRackText(){ renderRack(); }
+      function tokensFromBracketStr(s){
+        const out=[]; s = s||''; let i=0; while(i<s.length){
+          if(s[i]==='['){ const j=s.indexOf(']', i+1); if(j>i){ out.push(s.slice(i,j+1)); i=j+1; continue; } }
+          out.push(s[i]); i++; }
+        return out;
+      }
+      function rebuildRackCounts(){ rackCounts={}; for(const t of rackTokensArr){ rackCounts[t]=(rackCounts[t]||0)+1; } }
+      function shuffleRack(){ for(let i=rackTokensArr.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [rackTokensArr[i],rackTokensArr[j]]=[rackTokensArr[j],rackTokensArr[i]]; } rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText(); }
+      function recallLast(){ const keys = Object.keys(pendingPlacements).map(k=>parseInt(k)).sort((a,b)=>b-a); if(keys.length){ const last=keys[0]; const tk=pendingPlacements[last]; if(tk){ rackTokensArr.push(tk); rebuildRackCounts(); } delete pendingPlacements[last]; renderMatchBoard(); rackSelIdx.clear(); setMatchRackText(); } }
+      function recallAll(){ for(const k in pendingPlacements){ const tk=pendingPlacements[k]; if(tk){ rackTokensArr.push(tk); } delete pendingPlacements[k]; } rebuildRackCounts(); renderMatchBoard(); rackSelIdx.clear(); setMatchRackText(); }
+      function onMatchCellClick(idx){
+        const row=Math.floor(idx/15), col=idx%15;
+        if(startCell==null){ startCell={row,col}; placeDir = 'H'; }
+        else { startCell={row,col}; placeDir = (placeDir==='H'?'V':'H'); }
+        renderMatchBoard();
+      }
+      function mapInputToken(raw){
+        // If already a bracket token like [CH], pass through
+        if (typeof raw === 'string' && raw.startsWith('[') && raw.endsWith(']')) return raw;
+        // Normalize Spanish uppercase (ñ -> Ñ) and map digraph shortcuts
+        let d = String(raw||'').toUpperCase();
+        if (d === 'Ç') return '[CH]'; // convenience key -> CH
+        if (d === 'K') return '[LL]'; // convenience key -> LL
+        if (d === 'W') return '[RR]'; // convenience key -> RR
+        return d;
+      }
+      function rackHas(tok){ return (rackCounts[tok]||0) > 0; }
+      function tryPlaceToken(token){ if(startCell==null) return; // find next empty position along dir
+        token = mapInputToken(token);
+        // if typed CH as two letters, caller should send '[CH]'; keep single here
+        // consume from rack (prefer exact token; if not found, try lowercase for blank)
+        const consume = (tok)=>{ if((rackCounts[tok]||0)>0){ rackCounts[tok]--; const i=rackTokensArr.indexOf(tok); if(i>=0) rackTokensArr.splice(i,1); return true;} return false; };
+        let usedBlank=false; if(!consume(token)){ // try blank
+          if(consume('?')){ usedBlank=true; // blanks render lowercase
+            if(token.startsWith('[') && token.endsWith(']')) token = '['+token.slice(1,-1).toLowerCase()+']'; else token = token.toLowerCase();
+          } else { return; }
+        }
+        // find first placeable cell
+        let r=startCell.row, c=startCell.col; while(r>=0 && r<15 && c>=0 && c<15){ const i=r*15+c; if(!matchBoardState[i].trim() && !pendingPlacements[i]){ pendingPlacements[i]=token; break; } if(placeDir==='H') c++; else r++; }
+        setMatchRackText(); renderMatchBoard(); }
+      function flushPendingKey(){
+        if (!pendingKey) return;
+        tryPlaceToken(pendingKey);
+        pendingKey = null;
+        if (pendingKeyTimer){ clearTimeout(pendingKeyTimer); pendingKeyTimer=null; }
+      }
+      document.addEventListener('keydown', (e)=>{
+        if(!matchId) return;
+        const k = e.key;
+        if(k === ' '){ // toggle direction quickly
+          if (startCell){ placeDir = (placeDir==='H'?'V':'H'); renderMatchBoard(); e.preventDefault(); }
+          return;
+        }
+        if(k === 'Enter'){ /* handled elsewhere to submit */ return; }
+        if(k === 'Backspace'){ recallLast(); e.preventDefault(); return; }
+        if(k.length===1){
+          let ch = mapInputToken(k);
+          // Immediate digraph shortcuts via Ç/K/W
+          if (ch === '[CH]' || ch === '[LL]' || ch === '[RR]'){
+            flushPendingKey();
+            tryPlaceToken(ch);
+            e.preventDefault();
+            return;
+          }
+          // Merge buffer for CH, LL, RR
+          const mergeIfPossible = () => {
+            if (!pendingKey) return false;
+            const pair = (pendingKey + ch).toUpperCase();
+            if (pair === 'CH' && rackHas('[CH]')){ tryPlaceToken('[CH]'); pendingKey=null; return true; }
+            if (pair === 'LL' && rackHas('[LL]')){ tryPlaceToken('[LL]'); pendingKey=null; return true; }
+            if (pair === 'RR' && rackHas('[RR]')){ tryPlaceToken('[RR]'); pendingKey=null; return true; }
+            return false;
+          };
+          if (mergeIfPossible()){
+            if (pendingKeyTimer){ clearTimeout(pendingKeyTimer); pendingKeyTimer=null; }
+            e.preventDefault();
+            return;
+          }
+          // No merge: if a key is pending, place it now and buffer current
+          if (pendingKey){
+            flushPendingKey();
+          }
+          // buffer current key; will auto-flush shortly if not merged
+          pendingKey = ch;
+          if (pendingKeyTimer){ clearTimeout(pendingKeyTimer); }
+          pendingKeyTimer = setTimeout(()=>{ flushPendingKey(); }, 450);
+          e.preventDefault();
+        }
+      });
+      function aiMode(){ return (document.getElementById('matchAIMode')?.value)||'static'; }
+      async function createMatch(sim=false){
+        const kwgSel = document.getElementById('matchKwgPreset');
+        const kwg = (kwgSel && kwgSel.value) ? kwgSel.value : '';
+        const res = await fetch('/matches', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ kwg })});
+        const j = await res.json(); matchId = j.id; rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts(); setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}`); initMatchBoard(); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } }
+      async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts(); setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; renderMatchBoard(); }
+      async function submitPlay(){ if(!matchId||startCell==null) return; // build word from contiguous placements along dir
+        // ensure any buffered key is flushed before submit
+        flushPendingKey();
+        // determine start index (first placement cell in line)
+        const idxs = Object.keys(pendingPlacements).map(k=>parseInt(k)).sort((a,b)=>a-b);
+        if(!idxs.length) return;
+        let base = idxs[0];
+        // walk backwards along direction to include any contiguous existing tiles so coords point to actual word start
+        let r = Math.floor(base/15), c = base%15;
+        if (placeDir==='H'){
+          while (c-1>=0){ const i = r*15 + (c-1); const tk = (matchBoardState[i]||' ').trim(); if(!tk) break; c--; }
+        } else {
+          while (r-1>=0){ const i = (r-1)*15 + c; const tk = (matchBoardState[i]||' ').trim(); if(!tk) break; r--; }
+        }
+        // build word scanning along dir from first placement while encountering placements or existing tiles; for server we only need placed tiles string (no dots): join pending placements in order
+        let placedOrdered=[]; for(const i of idxs){ placedOrdered.push(pendingPlacements[i]); }
+        const word = placedOrdered.join('');
+        const payload = { word, row: r, col: c, dir: placeDir };
+        const submitBtn = document.getElementById('matchSubmitPlay');
+        if (submitBtn) submitBtn.disabled = true;
+        try{
+          const res = await fetch(`/matches/${matchId}/play`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+          const j = await res.json(); if(j.error){ alert(j.error); return; }
+          await refreshMatch();
+          // Auto AI move if enabled
+          if (document.getElementById('matchAutoAI')?.checked){ await doAIMove(); }
+        } finally {
+          if (submitBtn) submitBtn.disabled = false;
+        }
+      }
+      async function doPass(){ if(!matchId) return; const r = await fetch(`/matches/${matchId}/pass`, {method:'POST'}); const j = await r.json(); if(j.error){ alert(j.error); return;} await refreshMatch(); }
+      async function doExchange(){ if(!matchId) return; const tiles = document.getElementById('matchExchangeTiles').value.trim(); if(!tiles) return; const r = await fetch(`/matches/${matchId}/exchange`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({tiles})}); const j = await r.json(); if(j.error){ alert(j.error); return; } await refreshMatch(); }
+      async function doAIMove(){ if(!matchId) return; const mode = aiMode(); const payload = (mode==='sim')? {mode, sim:{iters:300, plies:2, topK:15}} : {mode:'static'}; const r = await fetch(`/matches/${matchId}/ai_move`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)}); const j = await r.json(); if(j.error){ alert(j.error); return; } await refreshMatch(); }
+      // Buttons wiring
+      window.addEventListener('load', ()=>{
+        document.getElementById('matchCreate').onclick=()=>createMatch(false);
+        document.getElementById('matchCreateSim').onclick=()=>createMatch(true);
+        document.getElementById('matchShuffle').onclick=shuffleRack;
+        document.getElementById('matchRecall').onclick=recallLast;
+        document.getElementById('matchRecallAll').onclick=recallAll;
+        document.getElementById('matchPass').onclick=doPass;
+        document.getElementById('matchExchange').onclick=doExchange;
+        document.getElementById('matchAIMove').onclick=doAIMove;
+        document.getElementById('matchSubmitPlay').onclick=submitPlay;
+        // submit with Enter: play
+        document.addEventListener('keydown', (e)=>{ if(e.key==='Enter' && matchId){ submitPlay(); e.preventDefault(); } });
+      });
+      const $ = sel => document.querySelector(sel);
+      const out = $('#out');
+      const movesDiv = $('#moves');
+      let leaveWorker = null;
+      let klv2Ready = false;
+      const board = $('#board');
+      for (let i=0;i<15*15;i++) {
+        const d = document.createElement('div'); d.className='cell'; d.textContent=''; board.appendChild(d);
+      }
+      let tid = null; let pid = null; let round = 1; let currentTournament = null;
+
+      function tokenizeRowStr(s){
+        const out=[]; s = (s||'');
+        for(let i=0;i<s.length;){
+          const ch=s[i];
+          if(ch==='['){
+            const j=s.indexOf(']', i+1);
+            if(j>i){ out.push(s.slice(i,j+1)); i=j+1; continue; }
+          }
+          out.push(ch==='.'? ' ' : ch);
+          i++;
+        }
+        return out;
+      }
+      function renderRows(rows){
+        if(!rows || rows.length !== 15) return;
+        const cells = board.children;
+        for(let r=0;r<15;r++){
+          const toks = tokenizeRowStr(rows[r]||'');
+          for(let c=0;c<15;c++){
+            const tk = (toks[c] != null ? toks[c] : ' ');
+            const cell = cells[r*15+c];
+            cell.textContent = tk.trim() ? tk : '';
+            if (tk && tk.trim()) { cell.classList.add('occ'); }
+            else { cell.classList.remove('occ'); }
+          }
+        }
+      }
+
+      async function fetchTournament(){
+        if(!tid) return;
+        const res = await fetch(`/tournaments/${tid}/`);
+        const j = await res.json(); currentTournament = j;
+        if(j && j.board_rows){ renderRows(j.board_rows); }
+        return j;
+      }
+
+      function log(obj) { out.textContent = (typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2)) + "\n" + out.textContent; }
+
+      function coordsStr(row, col, dir){
+        const r = (row|0) + 1;
+        const c = String.fromCharCode('A'.charCodeAt(0) + (col|0));
+        return dir === 'V' ? (c + r) : (r + c);
+      }
+
+      function getRowsFromGrid(){
+        const cells = board.children; const out = [];
+        for(let r=0;r<15;r++){
+          let s = '';
+          for(let c=0;c<15;c++){
+            let tk = cells[r*15+c].textContent || ' ';
+            if(!tk) tk=' ';
+            s += tk;
+          }
+          out.push(s);
+        }
+        return out;
+      }
+
+      function tokenizeWord(s){ return tokenizeRowStr(s); }
+      function applyMoveToRows(rows, mv){
+        // rows: array of 15 strings possibly with bracket-coded tokens; mv: {row,col,dir,word}
+        const grid = new Array(15);
+        for(let r=0;r<15;r++){ const tks = tokenizeRowStr(rows[r]||''); grid[r] = new Array(15).fill(' '); for(let c=0;c<15;c++){ grid[r][c] = (tks[c]!=null ? tks[c] : ' '); } }
+        let r = mv.row|0, c = mv.col|0; const v = ((mv.dir||'H').toUpperCase()==='V');
+        const dr = v ? 1 : 0, dc = v ? 0 : 1; const toks = tokenizeWord(mv.word||'');
+        for (let i=0;i<toks.length;i++){
+          if (r<0||r>=15||c<0||c>=15) break;
+          if ((grid[r][c]||' ') === ' ') { grid[r][c] = toks[i]; }
+          r += dr; c += dc;
+        }
+        // join back
+        const out = new Array(15);
+        for(let rr=0; rr<15; rr++){ out[rr] = grid[rr].join(''); }
+        return out;
+      }
+
+      async function applyMoveFromList(row,col,dir,word){
+        if (!tid) return log('Create tournament first');
+        const rows = getRowsFromGrid();
+        const next = applyMoveToRows(rows, {row, col, dir, word});
+        const res = await fetch(`/tournaments/${tid}/board`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ rows: next })});
+        const j = await res.json(); if (j && !j.error) { await fetchTournament(); }
+      }
+
+      function renderMovesList(all){
+        if(!Array.isArray(all)) { movesDiv.innerHTML = '<em>No moves</em>'; return; }
+        const topN = Math.max(1, Math.min(200, parseInt($('#topN').value||'25',10)||25));
+        const normWord = (s)=> s || '';
+        const toNum = (v)=>{
+          if (v == null) return null;
+          const n = Number(v);
+          return Number.isFinite(n) ? n : null;
+        };
+        // Compute leave/equity placeholders; sort will apply later
+        const rowsArr = all.slice(0, topN).map((m,i)=>{
+          const coord = coordsStr(m.row, m.col, m.dir);
+          const leave = (m.leave != null) ? String(m.leave) : '';
+          const engineEq = toNum(m.equity);
+          // prefer engine-provided leaveVal; fallback to worker-computed _leaveVal
+          let lvNum = toNum(m.leaveVal);
+          if (lvNum == null && m._leaveVal != null) lvNum = toNum(m._leaveVal);
+          if (lvNum == null && leave === '') {
+            // Bingo leaves show as empty; display 0.00 explicitly so sorting works
+            lvNum = 0;
+          }
+          const eqNum = (engineEq!=null) ? engineEq : ((lvNum != null) ? (Number(m.score||0) + lvNum) : null);
+          const wp = toNum(m.winPct);
+          return { idx:i, score: Number(m.score||0), win: (wp!=null?wp:0), coord, dir:m.dir||'', word:normWord(m.word||''), leave, lv: lvNum, eq: eqNum };
+        });
+        // Sorting (default by score desc)
+        const sortBy = ($('#sortBy')?.value)||'score';
+        rowsArr.sort((a,b)=>{
+          if (sortBy==='win') return ((b.win!=null?b.win:-1) - (a.win!=null?a.win:-1));
+          if (sortBy==='equity') return ((b.eq!=null?b.eq:-1) - (a.eq!=null?a.eq:-1));
+          if (sortBy==='leave') return ((b.lv!=null?b.lv:-1) - (a.lv!=null?a.lv:-1));
+          return (b.score - a.score);
+        });
+        const rows = rowsArr.map((r,i)=>{
+          let lvStr = (r.lv!=null) ? (typeof r.lv==='number' ? r.lv.toFixed(2) : String(r.lv)) : '';
+          let eqStr = (r.eq!=null) ? (typeof r.eq==='number' ? r.eq.toFixed(2) : String(r.eq)) : '';
+          // Prefer raw values from the original move if present (to avoid any client-side calc issues)
+          const raw = all[r.idx] || {};
+          const rawLV = Number.isFinite(Number(raw.leaveVal)) ? Number(raw.leaveVal) : null;
+          const rawEQ = Number.isFinite(Number(raw.equity)) ? Number(raw.equity) : null;
+          const rawWP = Number.isFinite(Number(raw.winPct)) ? Number(raw.winPct) : null;
+          if (rawLV != null) lvStr = rawLV.toFixed(2);
+          if (rawEQ != null) eqStr = rawEQ.toFixed(2);
+          const winStr = (rawWP != null) ? rawWP.toFixed(2) : ((typeof r.win==='number') ? r.win.toFixed(2) : '');
+          const leaveStr = (r.leave && r.leave.length) ? r.leave : '—';
+          const btn = `<button data-idx="${r.idx}" onclick="applyMoveFromList(${(all[r.idx]||{}).row|0}, ${(all[r.idx]||{}).col|0}, '${(all[r.idx]||{}).dir||'H'}', '${normWord((all[r.idx]||{}).word||'').replace(/'/g, "\'")}')">Apply</button>`;
+          return `<tr><td>${i+1}</td><td>${r.score}</td><td>${winStr}</td><td>${r.coord}</td><td>${r.dir}</td><td>${r.word}</td><td>${leaveStr}</td><td>${lvStr}</td><td>${eqStr}</td><td>${btn}</td></tr>`;
+        }).join('');
+        movesDiv.innerHTML = `<div class="row" style="margin:.5rem 0">
+          <label>Sort by
+            <select id="sortBy">
+              <option value="score">Score</option>
+              <option value="win">Win %</option>
+              <option value="leave">Leave value</option>
+              <option value="equity">Equity</option>
+            </select>
+          </label>
+        </div>
+        <table style="border-collapse:collapse;width:100%">
+          <thead><tr><th>#</th><th>Score</th><th>Win%</th><th>Coord</th><th>Dir</th><th>Word</th><th>Leave</th><th>Leave Val</th><th>Equity</th><th></th></tr></thead>
+          <tbody>${rows}</tbody></table>`;
+      }
+
+      $('#create').onclick = async () => {
+        const res = await fetch('/tournaments', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+          name: $('#name').value, ruleset: $('#ruleset').value, lexicon_path: $('#kwg').value
+        })});
+        const j = await res.json(); tid = j.id; currentTournament = j; log(j); renderRows(j.board_rows);
+      };
+      $('#kwgPreset').onchange = () => {
+        const v = $('#kwgPreset').value;
+        if (!v) return;
+        $('#kwg').value = v;
+        // Set Spanish ruleset by default for these presets
+        $('#ruleset').value = 'OSPS49';
+      };
+      $('#add').onclick = async () => {
+        if (!tid) return log('Create tournament first');
+        const res = await fetch(`/tournaments/${tid}/players`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ name: $('#player').value })});
+        const j = await res.json(); pid = j.id; log(j);
+      };
+      $('#start').onclick = async () => {
+        if (!tid) return log('Create tournament first');
+        const res = await fetch(`/tournaments/${tid}/rounds`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ rack: $('#rack').value })});
+        const j = await res.json(); round = j.number; log(j);
+      };
+      $('#submit').onclick = async () => {
+        if (!tid || !pid) return log('Create tournament and add player first');
+        const mv = $('#move').value.trim().toUpperCase();
+        const res = await fetch(`/tournaments/${tid}/rounds/${round}/submit`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ player_id: pid, move: {word: mv, row:7, col:7, dir:'H'}})});
+        log(await res.json());
+      };
+      $('#close').onclick = async () => {
+        if (!tid) return log('Create tournament first');
+        const res = await fetch(`/tournaments/${tid}/rounds/${round}/close`, { method:'POST' });
+        const j = await res.json(); log(j);
+        await fetchTournament();
+      };
+      $('#refresh').onclick = fetchTournament;
+
+      $('#setBoard').onclick = async () => {
+        if (!tid) return log('Create tournament first');
+        const raw = $('#rows').value.split(/\n/).map(s=>s.replace(/\r/g,''));
+        if (raw.length !== 15) return log('Provide exactly 15 lines');
+        const res = await fetch(`/tournaments/${tid}/board`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ rows: raw })});
+        const j = await res.json(); log({event:'setBoard', ok:!j.error});
+        await fetchTournament();
+      };
+
+      $('#genMoves').onclick = async () => {
+        const rows = getRowsFromGrid();
+        const rack = $('#rack').value.trim().toUpperCase();
+        const rules = (currentTournament?.ruleset || $('#ruleset').value.trim() || 'NWL23');
+        const kwg = (currentTournament?.lexicon_path || $('#kwg').value.trim() || '');
+        const req = { board: { rows }, rack, ruleset: rules, kwg };
+        const engine = ($('#engine')?.value||'macondo');
+        const mode = ($('#mode')?.value||'static');
+        if (mode === 'sim') {
+          const topN = Math.max(1, Math.min(50, parseInt($('#topN').value||'25',10)||25));
+          req.mode = 'sim';
+          // Conservative defaults to avoid timeouts
+          req.sim = { iters: 300, plies: 2, threads: 1, topK: Math.min(15, topN) };
+        }
+        const url = engine ? (`/moves?engine=${encodeURIComponent(engine)}`) : '/moves';
+        const res = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(req)});
+        const j = await res.json();
+        // If KLV2 is ready, fetch leave values in batch
+        if (klv2Ready && Array.isArray(j.all)) {
+          await Promise.all(j.all.map(m=>new Promise((resolve)=>{
+            const leave = (m.leave||'').toUpperCase();
+            if (!leaveWorker || !leave) return resolve();
+            const onMsg = (e)=>{
+              const d=e.data||{}; if(d.type==='leaveValue:ok'){ m._leaveVal=d.payload.value; leaveWorker.removeEventListener('message', onMsg); resolve(); }
+              if(d.type==='leaveValue:err'){ leaveWorker.removeEventListener('message', onMsg); resolve(); }
+            };
+            leaveWorker.addEventListener('message', onMsg);
+            leaveWorker.postMessage({ type:'leaveValue', payload:{ leave } });
+          })));
+        }
+        log(j); renderMovesList(j.all);
+      };
+      $('#loadKLV2').onclick = async () => {
+        try{
+          if(!leaveWorker){ leaveWorker = new Worker('/wolges-leave-worker.js'); }
+          // ensure init, then load FILE2017.klv2 via /klv2 endpoint
+          await new Promise((resolve)=>{
+            const onMsg=(e)=>{ if((e.data||{}).type==='init:ok'){ leaveWorker.removeEventListener('message', onMsg); resolve(); } };
+            leaveWorker.addEventListener('message', onMsg);
+            leaveWorker.postMessage({ type:'init' });
+          });
+          await new Promise((resolve,reject)=>{
+            const onMsg=(e)=>{ const d=e.data||{}; if(d.type==='loadKLV2:ok'){ leaveWorker.removeEventListener('message', onMsg); resolve(); } if(d.type==='loadKLV2:err'){ leaveWorker.removeEventListener('message', onMsg); reject(new Error(d.error||'failed')); } };
+            leaveWorker.addEventListener('message', onMsg);
+            leaveWorker.postMessage({ type:'loadKLV2', payload:{ url:'/klv2/FILE2017.klv2' } });
+          });
+          klv2Ready = true; $('#klv2Status').textContent = 'KLV2: loaded';
+        }catch(err){ klv2Ready=false; $('#klv2Status').textContent = 'KLV2: error'; log(String(err)); }
+      };
+
+      // Auto-load KLV2 on page load for convenience
+      window.addEventListener('load', () => { try { $('#loadKLV2').click(); } catch(_){} });
+      $('#standings').onclick = async () => {
+        if (!tid) return log('Create tournament first');
+        const res = await fetch(`/tournaments/${tid}/standings`);
+        log(await res.json());
+      };
+    </script>
+  </body>
+  </html>

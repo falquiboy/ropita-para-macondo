@@ -1,0 +1,1 @@
+kwg - a library to interface with Andy Kurnia's KWG (Kurnia Word Graph). For more information about KWG, see https://github.com/andy-k/wolges

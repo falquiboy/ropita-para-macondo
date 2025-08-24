@@ -1,0 +1,34 @@
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+
+# Go caches
+.gocache/
+.gomodcache/
+
+# Node / frontend (por si aplica)
+node_modules/
+dist/
+build/
+
+# Binarios y artefactos locales
+duplicate-tournament-manager/backend/bin/
+duplicate-tournament-manager/backend/server.stdout
+duplicate-tournament-manager/backend/server.stderr
+duplicate-tournament-manager/backend/server.pid
+
+# Lexicones grandes (se re-sembran desde la raíz si hace falta)
+lexica/*.kwg
+lexica/*.klv2
+lexica/*.kad
+
+# Logs y temporales
+*.log
+err*.txt
+out.json
+tmp_req.json
+*.tgz
+
+# WASM/Rust artifacts (si existieran bajo DUPMAN)
+target/
