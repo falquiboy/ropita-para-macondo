@@ -401,8 +401,6 @@
           const lbl = tokenLabel(tk);
           sp.className = 'tile' + ((lbl.length>1)?' digraph':'') + ((tk==='?')?' blank':'') + (rackSelIdx.has(idx)?' selected':'');
           const txt = document.createElement('span'); txt.textContent = lbl.toUpperCase(); sp.appendChild(txt);
-          // Reorder handle (custom DnD inside rack only)
-          const grab = document.createElement('span'); grab.className='grab'; sp.appendChild(grab);
           sp.title = 'Click: ' + (startCell? 'colocar':'seleccionar para intercambio');
           // Drag-and-drop to board (keep native)
           sp.setAttribute('draggable', 'true');
@@ -423,7 +421,17 @@
             try{
               const info = JSON.parse(data||'{}');
               if (!info) return;
-              if (info.kind === 'board' && Number.isInteger(info.idx)){
+              if (info.kind === 'rack' && Number.isInteger(info.idx)){
+                const from = info.idx;
+                const to = idx;
+                let insertAt = to;
+                if (from < to) insertAt = to - 1;
+                if (from !== to && from>=0 && from<rackTokensArr.length){
+                  const [item] = rackTokensArr.splice(from,1);
+                  rackTokensArr.splice(Math.min(insertAt, rackTokensArr.length), 0, item);
+                  rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText();
+                }
+              } else if (info.kind === 'board' && Number.isInteger(info.idx)){
                 // Swap pending tile from board into this rack slot
                 const src = info.idx; const tk = pendingPlacements[src];
                 if (tk){
@@ -434,7 +442,7 @@
                 }
               }
             }catch(_){ /* ignore */ }
-            sp.classList.remove('insert-left','insert-right'); if(rackDragPh){ rackDragPh.remove(); rackDragPh=null; } clearRackDnDHints();
+            sp.classList.remove('insert-left','insert-right');
           });
           sp.addEventListener('click', (ev)=>{
             // If a drag just occurred, swallow the click so we don't toggle selection accidentally
@@ -451,58 +459,7 @@
           });
           el.appendChild(sp);
 
-          // Custom reorder on grab handle (pointer-driven, cross-browser)
-          grab.addEventListener('mousedown', (downEv)=>{
-            downEv.preventDefault(); downEv.stopPropagation();
-            const rack = document.getElementById('matchRack'); if(!rack) return;
-            const srcIdx = idx;
-            const srcEl = sp;
-            const rect = srcEl.getBoundingClientRect();
-            // Ghost element following the pointer
-            const ghost = srcEl.cloneNode(true);
-            ghost.style.position='fixed'; ghost.style.pointerEvents='none'; ghost.style.opacity='0.8';
-            ghost.style.left = rect.left+'px'; ghost.style.top=rect.top+'px'; ghost.style.zIndex='9999';
-            document.body.appendChild(ghost);
-            // Placeholder
-            const ph = document.createElement('span'); ph.className='tile placeholder'+(srcEl.classList.contains('digraph')?' digraph':''); ph.style.width=rect.width+'px'; ph.style.height=rect.height+'px';
-            srcEl.parentNode.insertBefore(ph, srcEl); srcEl.classList.add('drag-hide');
-
-            const onMove = (ev)=>{
-              const cx = (ev.clientX!=null? ev.clientX : 0), cy = (ev.clientY!=null? ev.clientY : 0);
-              ghost.style.left = (cx-rect.width/2)+'px'; ghost.style.top=(cy-rect.height/2)+'px';
-              // Compute insert position based on center X relative to rack children midpoints
-              const rackRect = rack.getBoundingClientRect();
-              if (cy < rackRect.top-40 || cy > rackRect.bottom+40) return; // outside vertical range: ignore
-              let insertBefore = null;
-              for (const child of rack.children){
-                if (child === ph || child === srcEl) continue;
-                const cr = child.getBoundingClientRect();
-                const mid = cr.left + cr.width/2;
-                if (cx < mid){ insertBefore = child; break; }
-              }
-              if (insertBefore){
-                if (insertBefore !== ph.nextSibling) rack.insertBefore(ph, insertBefore);
-              } else {
-                if (rack.lastChild !== ph) rack.appendChild(ph);
-              }
-            };
-            const onUp = (ev)=>{
-              document.removeEventListener('mousemove', onMove);
-              document.removeEventListener('mouseup', onUp);
-              ghost.remove(); srcEl.classList.remove('drag-hide'); ph.remove();
-              // Finalize reorder
-              let insertIndex=0; for (const child of rack.children){ if (child === ph) break; if (child !== srcEl) insertIndex++; }
-              // Compute actual index excluding source element current
-              let from = srcIdx; let to = insertIndex; if (from < to) to -= 1;
-              if (from !== to && from>=0 && to>=0 && from < rackTokensArr.length){
-                const [item] = rackTokensArr.splice(from,1);
-                rackTokensArr.splice(Math.min(to, rackTokensArr.length), 0, item);
-                rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText();
-              }
-            };
-            document.addEventListener('mousemove', onMove);
-            document.addEventListener('mouseup', onUp);
-          });
+          // Removed custom reorder handle; using native DnD for simplicity
         });
       }
       function setMatchRackText(){ renderRack(); }
