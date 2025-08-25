@@ -34,8 +34,11 @@
       .rack { display: flex; gap: 4px; align-items: center; }
       .tile { min-width: 24px; height: 24px; padding: 0 4px; border-radius: 3px; background: #fff; border: 1px solid #bbb; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; cursor: pointer; user-select: none; }
       .tile.digraph { min-width: 34px; }
-      .tile.blank { color: #555; font-style: italic; }
-      .tile.selected { outline: 2px solid #10b981; background: #e6fffa; }
+.tile.blank { color: #555; font-style: italic; }
+.tile.selected { outline: 2px solid #10b981; background: #e6fffa; }
+/* DnD hint spacing */
+.tile.insert-left { margin-left: 12px; }
+.tile.insert-right { margin-right: 12px; }
       /* Coordinates (ES: filas letras, columnas números) */
       .coords-row { display: grid; grid-template-columns: repeat(15, var(--cell-size)); gap: var(--gap); height: var(--header-h); margin-top: 0.25rem; }
       .coords-col { display: grid; grid-template-rows: repeat(15, var(--cell-size)); gap: var(--gap); margin-right: 4px; }
@@ -359,7 +362,12 @@
             try { ev.dataTransfer?.setDragImage(sp, 12, 12); } catch(_){ }
           });
           sp.addEventListener('dragend', ()=>{ draggingKind = null; });
-          sp.addEventListener('dragover', (ev)=>{ ev.preventDefault(); });
+          sp.addEventListener('dragover', (ev)=>{ ev.preventDefault();
+            const side = (function(){ try{ const rect=sp.getBoundingClientRect(); const x=(ev.clientX||0)-rect.left; return (x>rect.width/2)?'right':'left'; }catch(_){ return 'right'; } })();
+            sp.classList.toggle('insert-left', side==='left');
+            sp.classList.toggle('insert-right', side==='right');
+          });
+          sp.addEventListener('dragleave', ()=>{ sp.classList.remove('insert-left','insert-right'); });
           sp.addEventListener('drop', (ev)=>{
             ev.preventDefault(); ev.stopPropagation();
             const data = ev.dataTransfer?.getData('text/plain');
@@ -367,10 +375,12 @@
               const info = JSON.parse(data||'{}');
               if (!info) return;
               if (info.kind === 'rack' && Number.isInteger(info.idx)){
-                const from = info.idx; const to = idx;
-                if (from !== to && from>=0 && from<rackTokensArr.length){
+                const from = info.idx;
+                const rect=sp.getBoundingClientRect(); const x=(ev.clientX||0)-rect.left; const side=(x>rect.width/2)?'right':'left';
+                let toBase = idx + (side==='right'?1:0);
+                if (from !== toBase && from>=0 && from<rackTokensArr.length){
                   const [item] = rackTokensArr.splice(from,1);
-                  const insertAt = (from<to)? (to-1) : to;
+                  const insertAt = (from<toBase)? (toBase-1) : toBase;
                   rackTokensArr.splice(insertAt, 0, item);
                   rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText();
                 }
@@ -385,6 +395,7 @@
                 }
               }
             }catch(_){ /* ignore */ }
+            sp.classList.remove('insert-left','insert-right');
           });
           sp.addEventListener('click', (ev)=>{
             if (draggingKind) { ev.preventDefault(); return; }
