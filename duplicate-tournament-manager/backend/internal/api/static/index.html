@@ -39,7 +39,8 @@
       .tile.selected { outline: 2px solid #10b981; background: #e6fffa; }
       /* DnD push-aside visuals for rack */
       .tile.placeholder { visibility: hidden; }
-      .tile.drag-hide { display: none; }
+      /* Keep layout space for the dragged source tile to preserve indices */
+      .tile.drag-hide { visibility: hidden; }
       .tile.insert-left { margin-left: 12px; }
       .tile.insert-right { margin-right: 12px; }
 /* DnD hint spacing */
@@ -381,8 +382,9 @@
             if (!rackDragPh){
               rackDragPh = document.createElement('span');
               rackDragPh.className = 'tile placeholder' + ((lbl.length>1)?' digraph':'');
-              rackDragPh.style.width = sp.offsetWidth + 'px';
-              rackDragPh.style.height = sp.offsetHeight + 'px';
+              const rect = sp.getBoundingClientRect();
+              rackDragPh.style.width = rect.width + 'px';
+              rackDragPh.style.height = rect.height + 'px';
               sp.parentNode.insertBefore(rackDragPh, sp);
               sp.classList.add('drag-hide');
             }
