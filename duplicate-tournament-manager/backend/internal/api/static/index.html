@@ -10,7 +10,7 @@
       .row { display: flex; gap: 1rem; align-items: center; margin-bottom: 0.5rem; }
       .grid { display: grid; grid-template-columns: repeat(15, var(--cell-size)); gap: var(--gap); margin-top: 0.25rem; }
       .cell { position: relative; width: var(--cell-size); height: var(--cell-size); box-sizing: border-box; background: #f2f2f2; border: 1px solid #ddd; font-size: 12px; display: flex; align-items: center; justify-content: center; }
-      .cell.start { outline: none; }
+      .cell.start { outline: 2px solid #3b82f6; }
       .cell .dir-arrow {
         position: absolute; inset: 0;
         display: flex; align-items: center; justify-content: center;
@@ -32,22 +32,10 @@
       .col { display: flex; flex-direction: column; gap: 0.5rem; }
       /* Rack tiles */
       .rack { display: flex; gap: 4px; align-items: center; }
-      .tile { position: relative; min-width: 24px; height: 24px; padding: 0 4px; border-radius: 3px; background: #fff; border: 1px solid #bbb; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; cursor: grab; user-select: none; }
-      .tile:active { cursor: grabbing; }
+      .tile { min-width: 24px; height: 24px; padding: 0 4px; border-radius: 3px; background: #fff; border: 1px solid #bbb; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; cursor: pointer; user-select: none; }
       .tile.digraph { min-width: 34px; }
       .tile.blank { color: #555; font-style: italic; }
       .tile.selected { outline: 2px solid #10b981; background: #e6fffa; }
-      .tile .grab { position: absolute; left: -3px; top: -3px; bottom: -3px; width: 8px; cursor: grab; opacity: 0.25; }
-      .tile .grab:hover { opacity: 0.5; }
-      /* DnD push-aside visuals for rack */
-      .tile.placeholder { visibility: hidden; }
-      /* Keep layout space for the dragged source tile to preserve indices */
-      .tile.drag-hide { opacity: 0; }
-      .tile.insert-left { margin-left: 12px; }
-      .tile.insert-right { margin-right: 12px; }
-/* DnD hint spacing */
-.tile.insert-left { margin-left: 12px; }
-.tile.insert-right { margin-right: 12px; }
       /* Coordinates (ES: filas letras, columnas números) */
       .coords-row { display: grid; grid-template-columns: repeat(15, var(--cell-size)); gap: var(--gap); height: var(--header-h); margin-top: 0.25rem; }
       .coords-col { display: grid; grid-template-rows: repeat(15, var(--cell-size)); gap: var(--gap); margin-right: 4px; }
@@ -58,7 +46,6 @@
   </head>
   <body>
     <h1>Duplicate Tournament Manager (MVP)</h1>
-    <div style="font-size:11px;color:#6b7280;margin:-8px 0 8px">UI build: <span id="buildStamp"></span></div>
 
     <h2>Partida vs Bot</h2>
     <div class="row">
@@ -69,22 +56,12 @@
     <div class="row">
       <button id="matchShuffle">Shuffle Rack</button>
       <button id="matchRecall">Recall (ultimo)</button>
-      <button id="matchRecallAll" title="Esc: devolver todas las fichas al atril">Recall (todos) (Esc)</button>
+      <button id="matchRecallAll">Recall (todos)</button>
       <button id="matchPass">Pasar</button>
       <button id="matchExchange">Intercambiar</button>
       <input id="matchExchangeTiles" type="text" placeholder="Tiles a cambiar (ej: AE)" style="width:12rem"/>
       <button id="matchAIMove">AI mueve</button>
       <select id="matchAIMode"><option value="static">Hasty</option><option value="sim">Sim</option></select>
-      <label>Orden rack
-        <select id="matchRackOrder">
-          <option value="none">— Orden —</option>
-          <option value="alpha">Alfabético</option>
-          <option value="vowels">Vocales primero</option>
-          <option value="es">Español trad.</option>
-          <option value="random">Aleatorio</option>
-        </select>
-      </label>
-      <label style="display:flex;align-items:center;gap:4px"><input id="silentDndToggle" type="checkbox"/> Silent DnD</label>
       <button id="matchSubmitPlay" title="Enviar jugada (Enter)">Jugar</button>
       <label style="display:flex;align-items:center;gap:4px"><input id="matchAutoAI" type="checkbox"/> Auto AI</label>
     </div>
@@ -107,7 +84,7 @@
       <div style="display:flex;flex-direction:column">
         <div class="coords-row" id="matchTopCoords"></div>
         <div class="grid" id="matchBoard"></div>
-        <div style="margin-top:4px;font-size:12px;color:#6b7280" title="Barra espaciadora: cambia dirección de tipeo">Inicio: <span id="matchCoordLabel">—</span></div>
+        <div style="margin-top:4px;font-size:12px;color:#6b7280">Inicio: <span id="matchCoordLabel">—</span></div>
       </div>
     </div>
     <div class="row">
@@ -205,9 +182,7 @@
       <span id="klv2Status">KLV2: not loaded</span>
     </div>
 
-      <script>
-      // Build stamp for cache-busting verification
-      try{ document.addEventListener('DOMContentLoaded', ()=>{ const e=document.getElementById('buildStamp'); if(e) e.textContent = new Date().toISOString(); }); }catch(_){ }
+    <script>
       // ===== Partida vs Bot =====
       let matchId = null;
       let matchMode = 'static';
@@ -232,7 +207,7 @@
         matchBoardEl.innerHTML = '';
         matchBoardEl.style.gridTemplateColumns = 'repeat(15, 24px)';
         for (let i=0;i<225;i++){
-          const d=document.createElement('div'); d.className='cell'; d.textContent=''; d.dataset.idx=String(i);
+          const d=document.createElement('div'); d.className='cell'; d.textContent='';
           // Allow dropping tiles from rack onto empty cells
           d.addEventListener('dragover', (ev)=>{ ev.preventDefault(); });
           d.addEventListener('drop', (ev)=>{
@@ -263,7 +238,6 @@
       function bonusAtIndex(i){ if(!matchBonusRows) return null; const r=(i/15)|0, c=i%15; const row=matchBonusRows[r]||''; const ch=row.charAt(c)||' '; switch(ch){ case '-': return 'DW'; case '=': return 'TW'; case '"': return 'TL'; case "'": return 'DL'; case '~': return '4W'; case '^': return '4L'; default: return null; } }
       function renderMatchBoard(){
         const cells = matchBoardEl.children;
-        const hasPending = Object.keys(pendingPlacements).length > 0;
         for(let i=0;i<225;i++){
           const tk = matchBoardState[i] || ' ';
           const placed = pendingPlacements[i];
@@ -286,10 +260,10 @@
           const prevB = cells[i].querySelector('.bonus'); if (prevB) prevB.remove();
           const prevS = cells[i].querySelector('.star'); if (prevS) prevS.remove();
           cells[i].classList.remove('tw','dw','tl','dl','center','occ');
-          // add arrow on start cell (typing aid only). Hide once there is any pending placement or if occupied
-          if (startCell && !hasPending){
+          // add arrow on start cell
+          if (startCell){
             const si = startCell.row*15 + startCell.col;
-            if (i === si && !(placed || (tk && tk.trim()))){
+            if (i === si){
               cells[i].classList.add('start');
               const span = document.createElement('span');
               span.className = 'dir-arrow';
@@ -332,112 +306,12 @@
         if (tk.startsWith('[') && tk.endsWith(']')) return tk.slice(1,-1); // CH/LL/RR or lowercase on blank
         return tk;
       }
-      let rackDragPh = null; // DOM placeholder element during rack drag
-      let rackJustDraggedAt = 0; // ms timestamp to suppress click after drag
-      let DEBUG_UI = false;
-      (function(){ try{ const u=new URL(window.location.href); DEBUG_UI = (u.searchParams.get('debug')==='1') || (localStorage.getItem('debugUI')==='1'); }catch(_){ } })();
-      const dbg = (...args)=>{ if (DEBUG_UI) console.debug('[UI]', ...args); };
-      function clearRackDnDHints(){
-        const el = document.getElementById('matchRack'); if(!el) return;
-        for (const ch of el.children){ ch.classList?.remove('insert-left','insert-right'); }
-      }
-      function getRackEl(){ return document.getElementById('matchRack'); }
-      function isPlaceholder(el){ return !!(el && el.classList && el.classList.contains('placeholder')); }
-      function computeInsertIndexFromPlaceholder(){
-        const rack = getRackEl(); if(!rack || !rackDragPh) return -1;
-        let idx = 0;
-        for (const ch of rack.children){ if (ch === rackDragPh) break; if (!isPlaceholder(ch)) idx++; }
-        return idx;
-      }
-      // Silent DnD (no HTML5), pointer-driven across rack and board
-      function enableSilentDnd(){
-        try{ localStorage.setItem('silentDnd','1'); }catch(_){ }
-        const rack = getRackEl(); if(!rack) return;
-        for (const [i, child] of Array.from(rack.children).entries()){
-          if (!(child instanceof HTMLElement)) continue;
-          child.setAttribute('draggable','false');
-          child.onmousedown = (e)=> startSilentDrag(e, i, child);
-        }
-      }
-      function disableSilentDnd(){
-        try{ localStorage.setItem('silentDnd','0'); }catch(_){ }
-        const rack = getRackEl(); if(!rack) return;
-        for (const child of Array.from(rack.children)){
-          if (!(child instanceof HTMLElement)) continue;
-          child.onmousedown = null;
-          child.setAttribute('draggable','true');
-        }
-      }
-      function elementBoardCellAt(x,y){ const el = document.elementFromPoint(x,y); if(!el) return null; if (el.classList && el.classList.contains('cell') && matchBoardEl && matchBoardEl.contains(el)) return el; return el?.closest && matchBoardEl && matchBoardEl.contains(el.closest('.cell')) ? el.closest('.cell') : null; }
-      function startSilentDrag(downEv, srcIdx, srcEl){
-        if (downEv.button!==0) return; // only left click
-        downEv.preventDefault(); downEv.stopPropagation();
-        const rack = getRackEl(); if(!rack) return;
-        const rect = srcEl.getBoundingClientRect();
-        // Ghost
-        const ghost = srcEl.cloneNode(true);
-        ghost.style.position='fixed'; ghost.style.pointerEvents='none'; ghost.style.opacity='0.8'; ghost.style.left=rect.left+'px'; ghost.style.top=rect.top+'px'; ghost.style.zIndex='9999';
-        document.body.appendChild(ghost);
-        // Placeholder
-        const ph = document.createElement('span'); ph.className='tile placeholder'+(srcEl.classList.contains('digraph')?' digraph':''); ph.style.width=rect.width+'px'; ph.style.height=rect.height+'px';
-        srcEl.parentNode.insertBefore(ph, srcEl); srcEl.classList.add('drag-hide');
-        const onMove = (ev)=>{
-          const cx = ev.clientX||0, cy = ev.clientY||0; ghost.style.left=(cx-rect.width/2)+'px'; ghost.style.top=(cy-rect.height/2)+'px';
-          const rackRect = rack.getBoundingClientRect();
-          if (cy >= rackRect.top-60 && cy <= rackRect.bottom+60){
-            // move placeholder within rack by midpoints
-            let insertBefore=null; for (const child of rack.children){ if (child===ph||child===srcEl) continue; const cr=child.getBoundingClientRect(); const mid=cr.left+cr.width/2; if (cx<mid){ insertBefore=child; break; } }
-            if (insertBefore){ if(insertBefore!==ph.nextSibling) rack.insertBefore(ph, insertBefore); } else { if(rack.lastChild!==ph) rack.appendChild(ph); }
-          }
-        };
-        const onUp = (ev)=>{
-          document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp);
-          const cx = ev.clientX||0, cy = ev.clientY||0; const cell = elementBoardCellAt(cx,cy);
-          ghost.remove(); srcEl.classList.remove('drag-hide');
-          if (cell){ // drop onto board
-            const idx = parseInt(cell.dataset.idx||'-1',10); if (!Number.isFinite(idx)) { ph.remove(); return; }
-            // place on board using existing helper; guard emptiness done in helper
-            dropRackTokenAtCell(srcIdx, idx);
-            ph.remove(); rackJustDraggedAt=Date.now(); return;
-          }
-          // reorder within rack
-          let insertIndex=0; for (const child of rack.children){ if (child===ph) break; if (child!==srcEl) insertIndex++; }
-          let from = srcIdx; let to = insertIndex; if (from < to) to -= 1;
-          ph.remove();
-          if (from !== to && from>=0 && to>=0 && from < rackTokensArr.length){
-            const [item] = rackTokensArr.splice(from,1); rackTokensArr.splice(Math.min(to, rackTokensArr.length), 0, item);
-            rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText();
-          }
-          rackJustDraggedAt=Date.now();
-        };
-        document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
-      }
-      let rackDraggingSourceEl = null;
-      let rackDraggingFrom = -1;
       function renderRack(){
         const el = document.getElementById('matchRack');
         if (!el) return;
         el.innerHTML = '';
         // Enable dropping to rack container (append dragged tile at end)
-        el.ondragover = (ev)=>{ ev.preventDefault();
-          // If dragging over rack and no placeholder yet, create it at source position and hide source now
-          if (rackDraggingSourceEl && !rackDragPh){
-            try{
-              const src = rackDraggingSourceEl;
-              const rect = src.getBoundingClientRect();
-              rackDragPh = document.createElement('span');
-              rackDragPh.className = 'tile placeholder' + (src.classList.contains('digraph')? ' digraph':'');
-              rackDragPh.style.width = rect.width + 'px';
-              rackDragPh.style.height = rect.height + 'px';
-              src.parentNode.insertBefore(rackDragPh, src);
-              src.classList.add('drag-hide');
-              dbg('rack first over: create placeholder at', rackDraggingFrom);
-            }catch(_){}
-          }
-          // move placeholder to end if hovering the container empty area
-          if(rackDragPh && el.lastChild !== rackDragPh){ el.appendChild(rackDragPh); }
-        };
-        el.ondragenter = (ev)=>{ if (rackDraggingSourceEl) { /* ensure we process dragover */ ev.preventDefault(); } };
+        el.ondragover = (ev)=>{ ev.preventDefault(); };
         el.ondrop = (ev)=>{
           ev.preventDefault();
           const data = ev.dataTransfer?.getData('text/plain');
@@ -460,30 +334,21 @@
               }
             }
           }catch(_){ /* ignore */ }
-          // cleanup placeholder/hints
-           clearRackDnDHints(); if(rackDragPh){ rackDragPh.remove(); rackDragPh=null; } if(rackDraggingSourceEl){ rackDraggingSourceEl.classList.remove('drag-hide'); rackDraggingSourceEl=null; rackDraggingFrom=-1; }
         };
         rackTokensArr.forEach((tk, idx)=>{
           const sp = document.createElement('span');
           const lbl = tokenLabel(tk);
           sp.className = 'tile' + ((lbl.length>1)?' digraph':'') + ((tk==='?')?' blank':'') + (rackSelIdx.has(idx)?' selected':'');
-          const txt = document.createElement('span'); txt.textContent = lbl.toUpperCase(); sp.appendChild(txt);
+          sp.textContent = lbl.toUpperCase();
           sp.title = 'Click: ' + (startCell? 'colocar':'seleccionar para intercambio');
-          // Drag-and-drop to board (keep native)
+          // Drag-and-drop reorder and drag to board
           sp.setAttribute('draggable', 'true');
           sp.addEventListener('dragstart', (ev)=>{
             draggingKind = 'rack';
-            try { ev.dataTransfer.effectAllowed = 'move'; } catch(_){ }
-            try { ev.dataTransfer?.setData('text/plain', JSON.stringify({kind:'rack', idx})); } catch(_){ }
-            try {
-              // Minimal drag image to reduce OS ghost
-              const cv=document.createElement('canvas'); cv.width=cv.height=1; ev.dataTransfer?.setDragImage(cv, 0, 0);
-            } catch(_){ }
-            rackDraggingSourceEl = sp; rackDraggingFrom = idx;
-            dbg('rack dragstart', {from: idx});
+            ev.dataTransfer?.setData('text/plain', JSON.stringify({kind:'rack', idx}));
+            try { ev.dataTransfer?.setDragImage(sp, 12, 12); } catch(_){ }
           });
-          sp.addEventListener('dragend', ()=>{ draggingKind = null; rackJustDraggedAt = Date.now(); if(rackDragPh){ rackDragPh.remove(); rackDragPh=null; } clearRackDnDHints(); if (rackDraggingSourceEl){ rackDraggingSourceEl.classList.remove('drag-hide'); } rackDraggingSourceEl=null; rackDraggingFrom=-1; });
-          // Allow drop onto this tile (reorder)
+          sp.addEventListener('dragend', ()=>{ draggingKind = null; });
           sp.addEventListener('dragover', (ev)=>{ ev.preventDefault(); });
           sp.addEventListener('drop', (ev)=>{
             ev.preventDefault(); ev.stopPropagation();
@@ -492,13 +357,11 @@
               const info = JSON.parse(data||'{}');
               if (!info) return;
               if (info.kind === 'rack' && Number.isInteger(info.idx)){
-                const from = info.idx;
-                const to = idx;
-                let insertAt = to;
-                if (from < to) insertAt = to - 1;
+                const from = info.idx; const to = idx;
                 if (from !== to && from>=0 && from<rackTokensArr.length){
                   const [item] = rackTokensArr.splice(from,1);
-                  rackTokensArr.splice(Math.min(insertAt, rackTokensArr.length), 0, item);
+                  const insertAt = (from<to)? (to-1) : to;
+                  rackTokensArr.splice(insertAt, 0, item);
                   rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText();
                 }
               } else if (info.kind === 'board' && Number.isInteger(info.idx)){
@@ -512,11 +375,9 @@
                 }
               }
             }catch(_){ /* ignore */ }
-            sp.classList.remove('insert-left','insert-right');
           });
           sp.addEventListener('click', (ev)=>{
-            // If a drag just occurred, swallow the click so we don't toggle selection accidentally
-            if (draggingKind || (Date.now() - rackJustDraggedAt) < 250) { ev.preventDefault(); return; }
+            if (draggingKind) { ev.preventDefault(); return; }
             if (startCell){
               tryPlaceToken(tk);
               return;
@@ -528,8 +389,6 @@
             renderRack();
           });
           el.appendChild(sp);
-
-          // Removed custom reorder handle; using native DnD for simplicity
         });
       }
       function setMatchRackText(){ renderRack(); }
@@ -564,14 +423,8 @@
       }
       function onMatchCellClick(idx){
         const row=Math.floor(idx/15), col=idx%15;
-        const occupied = !!((matchBoardState[idx]||' ').trim() || pendingPlacements[idx]);
-        if (occupied) return; // indicator solo en celdas vacías
-        if (!startCell || startCell.row!==row || startCell.col!==col){
-          startCell={row,col}; // no cambia la dirección; se mantiene la intención actual
-        } else {
-          // clic repetido en la misma celda vacía: alterna dirección como comodidad
-          placeDir = (placeDir==='H'?'V':'H');
-        }
+        if(startCell==null){ startCell={row,col}; placeDir = 'H'; }
+        else { startCell={row,col}; placeDir = (placeDir==='H'?'V':'H'); }
         renderMatchBoard();
       }
       function placedTokenForBlankAssignment(assign){
@@ -609,7 +462,8 @@
         }
         rackSelIdx.clear();
         rebuildRackCounts();
-        // Do not move the typing indicator on DnD; it's for keyboard placement only.
+        // If no start cell yet, anchor it where the user dropped first.
+        if (!startCell){ startCell = { row: Math.floor(cellIdx/15), col: (cellIdx%15) }; }
         setMatchRackText();
         renderMatchBoard();
       }
@@ -656,14 +510,12 @@
       }
       document.addEventListener('keydown', (e)=>{
         if(!matchId) return;
-        const k = e.key;
-        // Escape: recall all pending placements to rack from anywhere
-        if (k === 'Escape') { recallAll(); e.preventDefault(); return; }
-        if (draggingKind) return; // ignore other keystrokes during drag
+        if (draggingKind) return; // ignore keystrokes during drag
         // Do not hijack typing when the user is focused on an input/textarea/select or contenteditable
         const ae = document.activeElement;
         const isEditing = (ae && ((ae.tagName === 'INPUT') || (ae.tagName === 'TEXTAREA') || (ae.tagName === 'SELECT') || ae.isContentEditable));
         if (isEditing) return;
+        const k = e.key;
         if(k === ' '){ // toggle direction quickly
           if (startCell){ placeDir = (placeDir==='H'?'V':'H'); renderMatchBoard(); e.preventDefault(); }
           return;
@@ -709,15 +561,9 @@
         const kwgSel = document.getElementById('matchKwgPreset');
         const kwg = (kwgSel && kwgSel.value) ? kwgSel.value : '';
         const res = await fetch('/matches', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ kwg })});
-        const j = await res.json(); matchId = j.id; rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts();
-        // Aplicar orden persistente del rack
-        try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
-        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}`); initMatchBoard(); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } }
-      async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts();
-        // Reaplicar orden persistente del rack en cada surtido
-        try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
-        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; startCell=null; placeDir='H'; renderMatchBoard(); }
-      async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); if(j && Array.isArray(j.rows)){ renderHistoryGrouped(j.rows); } } catch(_){} }
+        const j = await res.json(); matchId = j.id; rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts(); setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}`); initMatchBoard(); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } }
+      async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts(); setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; renderMatchBoard(); }
+      async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); if(j && Array.isArray(j.rows)){ renderHistory(j.rows); } } catch(_){} }
       function renderHistory(rows){
         const div = document.getElementById('matchHistory'); if(!div) return;
         const mapType = (t)=>{
@@ -754,56 +600,21 @@
         html += '</tbody></table>';
         div.innerHTML = html;
       }
-      // New grouped renderer: both players in the same row per round, coords per convention with arrow glyph
-      function renderHistoryGrouped(rows){
-        const div = document.getElementById('matchHistory'); if(!div) return;
-        const icon = (d)=> (String(d||'H').toUpperCase()==='V' ? '↓' : '→');
-        const rounds = [];
-        for (const r of (rows||[])){
-          const idx = Math.floor(((r.ply||1)-1)/2);
-          if (!rounds[idx]) rounds[idx] = { n: idx+1, you: null, bot: null };
-          const cell = { word: r.word||'', coord: (r.row>=0 && r.col>=0) ? (coordsStr(r.row, r.col, r.dir) + ' ' + icon(r.dir)) : '', score: r.score||0, type: (r.type||'').toUpperCase(), cum: r.cum||0 };
-          if (r.player === 0) rounds[idx].you = cell; else rounds[idx].bot = cell;
-        }
-        let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">'+
-          '<thead><tr style="background:#f8fafc">'+
-          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Ronda</th>'+
-          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Tú</th>'+
-          '<th style="text-align:right;padding:4px;border-bottom:1px solid #e5e7eb">Pts</th>'+
-          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Coord</th>'+
-          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Bot</th>'+
-          '<th style="text-align:right;padding:4px;border-bottom:1px solid #e5e7eb">Pts</th>'+
-          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Coord</th>'+
-          '</tr></thead><tbody>';
-        for (const r of rounds){ if(!r) continue; const y=r.you||{}, b=r.bot||{};
-          const yt = y.type==='PASS'?'Pasa': y.type==='EXCH' ? ('Intercambia '+(y.word||'')) : (y.word||'');
-          const bt = b.type==='PASS'?'Pasa': b.type==='EXCH' ? ('Intercambia '+(b.word||'')) : (b.word||'');
-          html += '<tr>'+
-            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${r.n}</td>`+
-            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${yt}</td>`+
-            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9;text-align:right\">${y.score||''}</td>`+
-            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${y.coord||''}</td>`+
-            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${bt}</td>`+
-            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9;text-align:right\">${b.score||''}</td>`+
-            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${b.coord||''}</td>`+
-          '</tr>';
-        }
-        html += '</tbody></table>';
-        div.innerHTML = html;
-      }
-      async function submitPlay(){ if(!matchId) return; // indicator is for typing only; infer direction from placements
+      async function submitPlay(){ if(!matchId) return; // build word from contiguous placements along dir
         // ensure any buffered key is flushed before submit
         flushPendingKey();
         // determine start index (first placement cell in line)
         const idxs = Object.keys(pendingPlacements).map(k=>parseInt(k));
         if(!idxs.length) return;
-        // Infer direction from placements only
-        let dir;
-        const rows = new Set(idxs.map(i=>Math.floor(i/15)));
-        const cols = new Set(idxs.map(i=>i%15));
-        if (rows.size === 1) dir = 'H';
-        else if (cols.size === 1) dir = 'V';
-        else dir = 'H';
+        // Infer direction if none set by user interaction
+        let dir = placeDir;
+        if (!startCell){
+          const rows = new Set(idxs.map(i=>Math.floor(i/15)));
+          const cols = new Set(idxs.map(i=>i%15));
+          if (rows.size === 1) dir = 'H';
+          else if (cols.size === 1) dir = 'V';
+          else dir = 'H';
+        }
         // Choose base index at leftmost (H) or topmost (V) among placements
         let base;
         if (dir==='H'){
@@ -863,19 +674,6 @@
         document.getElementById('matchAIMove').onclick=doAIMove;
         document.getElementById('matchHistoryRefresh').onclick=refreshHistory;
         document.getElementById('matchSubmitPlay').onclick=submitPlay;
-        // Rack order change
-        const ordSel = document.getElementById('matchRackOrder');
-        if (ordSel){
-          // cargar preferencia guardada
-          try{ const saved = localStorage.getItem('rackOrder'); if(saved){ ordSel.value=saved; applyRackOrder(saved); } }catch(_){ }
-          ordSel.onchange = ()=>{ const v=ordSel.value||'none'; try{ localStorage.setItem('rackOrder', v); }catch(_){ } applyRackOrder(v); };
-        }
-        // Silent DnD toggle (no browser ghost)
-        const sdn = document.getElementById('silentDndToggle');
-        if (sdn){ try{ sdn.checked = (localStorage.getItem('silentDnd')==='1'); }catch(_){ }
-          sdn.onchange = ()=>{ if (sdn.checked) enableSilentDnd(); else disableSilentDnd(); };
-          if (sdn.checked) enableSilentDnd();
-        }
         // Submit with Enter: if focused on exchange input, do exchange; otherwise submit play
         document.addEventListener('keydown', (e)=>{
           if (!matchId || e.key !== 'Enter') return;
@@ -940,53 +738,9 @@
       function log(obj) { out.textContent = (typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2)) + "\n" + out.textContent; }
 
       function coordsStr(row, col, dir){
-        // Convention: letter first => horizontal (e.g., H4); number first => vertical (e.g., 4H)
-        const num = (col|0) + 1;
-        const letc = String.fromCharCode('A'.charCodeAt(0) + (row|0));
-        return (String(dir||'H').toUpperCase()==='V') ? (String(num) + letc) : (letc + String(num));
-      }
-
-      function tokenKey(tk){
-        if (!tk) return '';
-        if (tk === '?') return '?';
-        if (tk.startsWith('[') && tk.endsWith(']')) return tk.slice(1,-1).toUpperCase();
-        return tk.toUpperCase();
-      }
-      function applyRackOrder(order){
-        if (!order || order==='none') return;
-        if (order==='random'){
-          // Fisher-Yates shuffle
-          for(let i=rackTokensArr.length-1; i>0; i--){ const j=Math.floor(Math.random()*(i+1)); [rackTokensArr[i], rackTokensArr[j]] = [rackTokensArr[j], rackTokensArr[i]]; }
-          rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText(); return;
-        }
-        const vowels = new Set(['A','E','I','O','U']);
-        const esOrder = ['A','B','C','CH','D','E','F','G','H','I','J','L','LL','M','N','Ñ','O','P','Q','R','RR','S','T','U','V','X','Y','Z'];
-        const esIndex = {}; esOrder.forEach((s,i)=>{ esIndex[s]=i; });
-        const rank = (tk)=>{
-          const key = tokenKey(tk);
-          if (order==='alpha'){
-            // '?' last
-            return [key==='?'? 1:0, key];
-          } else if (order==='vowels'){
-            const grp = vowels.has(key)? 0 : 1;
-            return [grp, key==='?'? 2:1, key];
-          } else if (order==='es'){
-            const idx = (key in esIndex)? esIndex[key] : 999;
-            return [0, idx, key==='?'? 2:1, key];
-          }
-          return [0, key];
-        };
-        rackTokensArr.sort((a,b)=>{
-          const ra = rank(a), rb = rank(b);
-          for (let i=0;i<Math.max(ra.length, rb.length); i++){
-            const av = ra[i]||0, bv = rb[i]||0;
-            if (av < bv) return -1; if (av > bv) return 1;
-          }
-          return 0;
-        });
-        rackSelIdx.clear();
-        rebuildRackCounts();
-        setMatchRackText();
+        const r = (row|0) + 1;
+        const c = String.fromCharCode('A'.charCodeAt(0) + (col|0));
+        return dir === 'V' ? (c + r) : (r + c);
       }
 
       function getRowsFromGrid(){
