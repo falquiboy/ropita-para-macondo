@@ -32,7 +32,8 @@
       .col { display: flex; flex-direction: column; gap: 0.5rem; }
       /* Rack tiles */
       .rack { display: flex; gap: 4px; align-items: center; }
-      .tile { min-width: 24px; height: 24px; padding: 0 4px; border-radius: 3px; background: #fff; border: 1px solid #bbb; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; cursor: pointer; user-select: none; }
+      .tile { min-width: 24px; height: 24px; padding: 0 4px; border-radius: 3px; background: #fff; border: 1px solid #bbb; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; cursor: grab; user-select: none; }
+      .tile:active { cursor: grabbing; }
       .tile.digraph { min-width: 34px; }
       .tile.blank { color: #555; font-style: italic; }
       .tile.selected { outline: 2px solid #10b981; background: #e6fffa; }
@@ -325,6 +326,7 @@
         return tk;
       }
       let rackDragPh = null; // DOM placeholder element during rack drag
+      let rackJustDraggedAt = 0; // ms timestamp to suppress click after drag
       function clearRackDnDHints(){
         const el = document.getElementById('matchRack'); if(!el) return;
         for (const ch of el.children){ ch.classList?.remove('insert-left','insert-right'); }
@@ -385,7 +387,7 @@
               sp.classList.add('drag-hide');
             }
           });
-          sp.addEventListener('dragend', ()=>{ draggingKind = null; if(rackDragPh){ rackDragPh.remove(); rackDragPh=null; } clearRackDnDHints(); sp.classList.remove('drag-hide'); });
+          sp.addEventListener('dragend', ()=>{ draggingKind = null; rackJustDraggedAt = Date.now(); if(rackDragPh){ rackDragPh.remove(); rackDragPh=null; } clearRackDnDHints(); sp.classList.remove('drag-hide'); });
           sp.addEventListener('dragover', (ev)=>{ ev.preventDefault();
             // Move placeholder before/after this tile based on pointer side
             if (rackDragPh){
@@ -436,7 +438,8 @@
             sp.classList.remove('insert-left','insert-right'); if(rackDragPh){ rackDragPh.remove(); rackDragPh=null; } clearRackDnDHints();
           });
           sp.addEventListener('click', (ev)=>{
-            if (draggingKind) { ev.preventDefault(); return; }
+            // If a drag just occurred, swallow the click so we don't toggle selection accidentally
+            if (draggingKind || (Date.now() - rackJustDraggedAt) < 250) { ev.preventDefault(); return; }
             if (startCell){
               tryPlaceToken(tk);
               return;
