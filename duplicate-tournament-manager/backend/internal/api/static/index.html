@@ -62,6 +62,14 @@
       <input id="matchExchangeTiles" type="text" placeholder="Tiles a cambiar (ej: AE)" style="width:12rem"/>
       <button id="matchAIMove">AI mueve</button>
       <select id="matchAIMode"><option value="static">Hasty</option><option value="sim">Sim</option></select>
+      <label>Orden rack
+        <select id="matchRackOrder">
+          <option value="none">— Orden —</option>
+          <option value="alpha">Alfabético</option>
+          <option value="vowels">Vocales primero</option>
+          <option value="es">Español trad.</option>
+        </select>
+      </label>
       <button id="matchSubmitPlay" title="Enviar jugada (Enter)">Jugar</button>
       <label style="display:flex;align-items:center;gap:4px"><input id="matchAutoAI" type="checkbox"/> Auto AI</label>
     </div>
@@ -261,10 +269,10 @@
           const prevB = cells[i].querySelector('.bonus'); if (prevB) prevB.remove();
           const prevS = cells[i].querySelector('.star'); if (prevS) prevS.remove();
           cells[i].classList.remove('tw','dw','tl','dl','center','occ');
-          // add arrow on start cell (typing aid only). Hide once there is any pending placement
+          // add arrow on start cell (typing aid only). Hide once there is any pending placement or if occupied
           if (startCell && !hasPending){
             const si = startCell.row*15 + startCell.col;
-            if (i === si){
+            if (i === si && !(placed || (tk && tk.trim()))){
               cells[i].classList.add('start');
               const span = document.createElement('span');
               span.className = 'dir-arrow';
@@ -564,7 +572,7 @@
         const kwg = (kwgSel && kwgSel.value) ? kwgSel.value : '';
         const res = await fetch('/matches', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ kwg })});
         const j = await res.json(); matchId = j.id; rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts(); setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}`); initMatchBoard(); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } }
-      async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts(); setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; renderMatchBoard(); }
+      async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts(); setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; startCell=null; placeDir='H'; renderMatchBoard(); }
       async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); if(j && Array.isArray(j.rows)){ renderHistoryGrouped(j.rows); } } catch(_){} }
       function renderHistory(rows){
         const div = document.getElementById('matchHistory'); if(!div) return;
@@ -711,6 +719,9 @@
         document.getElementById('matchAIMove').onclick=doAIMove;
         document.getElementById('matchHistoryRefresh').onclick=refreshHistory;
         document.getElementById('matchSubmitPlay').onclick=submitPlay;
+        // Rack order change
+        const ordSel = document.getElementById('matchRackOrder');
+        if (ordSel) ordSel.onchange = ()=>{ applyRackOrder(ordSel.value||'none'); };
         // Submit with Enter: if focused on exchange input, do exchange; otherwise submit play
         document.addEventListener('keydown', (e)=>{
           if (!matchId || e.key !== 'Enter') return;
@@ -779,6 +790,44 @@
         const num = (col|0) + 1;
         const letc = String.fromCharCode('A'.charCodeAt(0) + (row|0));
         return (String(dir||'H').toUpperCase()==='V') ? (String(num) + letc) : (letc + String(num));
+      }
+
+      function tokenKey(tk){
+        if (!tk) return '';
+        if (tk === '?') return '?';
+        if (tk.startsWith('[') && tk.endsWith(']')) return tk.slice(1,-1).toUpperCase();
+        return tk.toUpperCase();
+      }
+      function applyRackOrder(order){
+        if (!order || order==='none') return;
+        const vowels = new Set(['A','E','I','O','U']);
+        const esOrder = ['A','B','C','CH','D','E','F','G','H','I','J','L','LL','M','N','Ñ','O','P','Q','R','RR','S','T','U','V','X','Y','Z'];
+        const esIndex = {}; esOrder.forEach((s,i)=>{ esIndex[s]=i; });
+        const rank = (tk)=>{
+          const key = tokenKey(tk);
+          if (order==='alpha'){
+            // '?' last
+            return [key==='?'? 1:0, key];
+          } else if (order==='vowels'){
+            const grp = vowels.has(key)? 0 : 1;
+            return [grp, key==='?'? 2:1, key];
+          } else if (order==='es'){
+            const idx = (key in esIndex)? esIndex[key] : 999;
+            return [0, idx, key==='?'? 2:1, key];
+          }
+          return [0, key];
+        };
+        rackTokensArr.sort((a,b)=>{
+          const ra = rank(a), rb = rank(b);
+          for (let i=0;i<Math.max(ra.length, rb.length); i++){
+            const av = ra[i]||0, bv = rb[i]||0;
+            if (av < bv) return -1; if (av > bv) return 1;
+          }
+          return 0;
+        });
+        rackSelIdx.clear();
+        rebuildRackCounts();
+        setMatchRackText();
       }
 
       function getRowsFromGrid(){
