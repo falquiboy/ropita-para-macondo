@@ -361,8 +361,8 @@
           sp.addEventListener('dragstart', (ev)=>{
             draggingKind = 'rack';
             try { ev.dataTransfer.effectAllowed = 'move'; } catch(_){ }
+            // Use a simple payload similar to wolges to avoid OS fallback icons
             try { ev.dataTransfer?.setData('text/plain', JSON.stringify({kind:'rack', idx})); } catch(_){ }
-            try { const cv=document.createElement('canvas'); cv.width=cv.height=1; ev.dataTransfer?.setDragImage(cv, 0, 0); } catch(_){ }
             rackDragFrom = idx;
             sp.classList.add('dragging');
           });
