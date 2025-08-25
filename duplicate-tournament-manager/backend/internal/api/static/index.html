@@ -92,6 +92,17 @@
       <div style="margin-left:1rem">Score: <span id="matchScore"></span> | Bolsa: <span id="matchBag"></span></div>
     </div>
 
+    <div class="row" style="align-items:flex-start">
+      <div style="flex:1">
+        <h3 style="margin:6px 0 4px">Historial</h3>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+          <button id="matchHistoryRefresh">Actualizar historial</button>
+          <small style="color:#6b7280">Se actualiza también tras cada jugada</small>
+        </div>
+        <div id="matchHistory" style="max-height:220px; overflow:auto; border:1px solid #e5e7eb; border-radius:4px"></div>
+      </div>
+    </div>
+
     <div class="row">
       <label>Name <input id="name" type="text" value="Torneo Demo" /></label>
       <label>Rules <input id="ruleset" type="text" value="OSPS49" /></label>
@@ -196,6 +207,21 @@
         matchBoardEl.style.gridTemplateColumns = 'repeat(15, 24px)';
         for (let i=0;i<225;i++){
           const d=document.createElement('div'); d.className='cell'; d.textContent='';
+          // Allow dropping tiles from rack onto empty cells
+          d.addEventListener('dragover', (ev)=>{ ev.preventDefault(); });
+          d.addEventListener('drop', (ev)=>{
+            ev.preventDefault();
+            const data = ev.dataTransfer?.getData('text/plain');
+            try{
+              const info = JSON.parse(data||'{}');
+              if (!info) return;
+              if (info.kind==='rack' && Number.isInteger(info.idx)){
+                dropRackTokenAtCell(info.idx, i);
+              } else if (info.kind==='board' && Number.isInteger(info.idx)){
+                movePlacementOnBoard(info.idx, i);
+              }
+            }catch(_){ /* ignore */ }
+          });
           d.addEventListener('click', ()=> onMatchCellClick(i));
           matchBoardEl.appendChild(d);
         }
@@ -216,6 +242,14 @@
           const placed = pendingPlacements[i];
           // reset main text
           cells[i].textContent = (placed || (tk && tk.trim() ? tk : ''));
+          // Make newly placed tiles draggable; fixed tiles are not draggable
+          if (placed){
+            cells[i].draggable = true;
+            cells[i].ondragstart = (ev)=>{ ev.dataTransfer?.setData('text/plain', JSON.stringify({kind:'board', idx:i})); };
+          } else {
+            cells[i].draggable = false;
+            cells[i].ondragstart = null;
+          }
           // remove any previous arrow
           const prev = cells[i].querySelector('.dir-arrow'); if (prev) prev.remove();
           cells[i].classList.remove('start');
@@ -273,12 +307,70 @@
         const el = document.getElementById('matchRack');
         if (!el) return;
         el.innerHTML = '';
+        // Enable dropping to rack container (append dragged tile at end)
+        el.ondragover = (ev)=>{ ev.preventDefault(); };
+        el.ondrop = (ev)=>{
+          ev.preventDefault();
+          const data = ev.dataTransfer?.getData('text/plain');
+          try{
+            const info = JSON.parse(data||'{}');
+            if (!info) return;
+            if (info.kind === 'rack' && Number.isInteger(info.idx)){
+              const from = info.idx;
+              if (from>=0 && from < rackTokensArr.length){
+                const [item] = rackTokensArr.splice(from,1);
+                rackTokensArr.push(item);
+                rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText();
+              }
+            } else if (info.kind === 'board' && Number.isInteger(info.idx)){
+              const src = info.idx; const tk = pendingPlacements[src];
+              if (tk){
+                rackTokensArr.push(isPlacedBlankToken(tk) ? '?' : tk);
+                delete pendingPlacements[src];
+                rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText(); renderMatchBoard();
+              }
+            }
+          }catch(_){ /* ignore */ }
+        };
         rackTokensArr.forEach((tk, idx)=>{
           const sp = document.createElement('span');
           const lbl = tokenLabel(tk);
           sp.className = 'tile' + ((lbl.length>1)?' digraph':'') + ((tk==='?')?' blank':'') + (rackSelIdx.has(idx)?' selected':'');
           sp.textContent = lbl.toUpperCase();
           sp.title = 'Click: ' + (startCell? 'colocar':'seleccionar para intercambio');
+          // Drag-and-drop reorder and drag to board
+          sp.setAttribute('draggable', 'true');
+          sp.addEventListener('dragstart', (ev)=>{
+            ev.dataTransfer?.setData('text/plain', JSON.stringify({kind:'rack', idx}));
+            try { ev.dataTransfer?.setDragImage(sp, 12, 12); } catch(_){ }
+          });
+          sp.addEventListener('dragover', (ev)=>{ ev.preventDefault(); });
+          sp.addEventListener('drop', (ev)=>{
+            ev.preventDefault();
+            const data = ev.dataTransfer?.getData('text/plain');
+            try{
+              const info = JSON.parse(data||'{}');
+              if (!info) return;
+              if (info.kind === 'rack' && Number.isInteger(info.idx)){
+                const from = info.idx; const to = idx;
+                if (from !== to && from>=0 && from<rackTokensArr.length){
+                  const [item] = rackTokensArr.splice(from,1);
+                  const insertAt = (from<to)? (to-1) : to;
+                  rackTokensArr.splice(insertAt, 0, item);
+                  rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText();
+                }
+              } else if (info.kind === 'board' && Number.isInteger(info.idx)){
+                // Swap pending tile from board into this rack slot
+                const src = info.idx; const tk = pendingPlacements[src];
+                if (tk){
+                  const prevRack = rackTokensArr[idx];
+                  rackTokensArr[idx] = isPlacedBlankToken(tk) ? '?' : tk;
+                  pendingPlacements[src] = prevRack;
+                  rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText(); renderMatchBoard();
+                }
+              }
+            }catch(_){ /* ignore */ }
+          });
           sp.addEventListener('click', (ev)=>{
             if (startCell){
               tryPlaceToken(tk);
@@ -302,12 +394,82 @@
       }
       function rebuildRackCounts(){ rackCounts={}; for(const t of rackTokensArr){ rackCounts[t]=(rackCounts[t]||0)+1; } }
       function shuffleRack(){ for(let i=rackTokensArr.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [rackTokensArr[i],rackTokensArr[j]]=[rackTokensArr[j],rackTokensArr[i]]; } rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText(); }
-      function recallLast(){ const keys = Object.keys(pendingPlacements).map(k=>parseInt(k)).sort((a,b)=>b-a); if(keys.length){ const last=keys[0]; const tk=pendingPlacements[last]; if(tk){ rackTokensArr.push(tk); rebuildRackCounts(); } delete pendingPlacements[last]; renderMatchBoard(); rackSelIdx.clear(); setMatchRackText(); } }
-      function recallAll(){ for(const k in pendingPlacements){ const tk=pendingPlacements[k]; if(tk){ rackTokensArr.push(tk); } delete pendingPlacements[k]; } rebuildRackCounts(); renderMatchBoard(); rackSelIdx.clear(); setMatchRackText(); }
+      function isPlacedBlankToken(tk){
+        if (!tk) return false;
+        // Single-letter lowercase (including ñ) denotes blank assignment
+        if (/^[a-zñ]$/.test(tk)) return true;
+        // Lowercase digraph in brackets denotes blank as digraph
+        if (/^\[(ch|ll|rr)\]$/.test(tk)) return true;
+        return false;
+      }
+      function recallLast(){
+        const keys = Object.keys(pendingPlacements).map(k=>parseInt(k)).sort((a,b)=>b-a);
+        if(!keys.length) return;
+        const last = keys[0];
+        const tk = pendingPlacements[last];
+        if (tk){ rackTokensArr.push(isPlacedBlankToken(tk) ? '?' : tk); rebuildRackCounts(); }
+        delete pendingPlacements[last];
+        renderMatchBoard(); rackSelIdx.clear(); setMatchRackText();
+      }
+      function recallAll(){
+        for(const k in pendingPlacements){ const tk=pendingPlacements[k]; if(tk){ rackTokensArr.push(isPlacedBlankToken(tk) ? '?' : tk); } delete pendingPlacements[k]; }
+        rebuildRackCounts(); renderMatchBoard(); rackSelIdx.clear(); setMatchRackText();
+      }
       function onMatchCellClick(idx){
         const row=Math.floor(idx/15), col=idx%15;
         if(startCell==null){ startCell={row,col}; placeDir = 'H'; }
         else { startCell={row,col}; placeDir = (placeDir==='H'?'V':'H'); }
+        renderMatchBoard();
+      }
+      function placedTokenForBlankAssignment(assign){
+        if (!assign) return null;
+        const up = assign.toUpperCase().trim();
+        if (up === 'CH' || up === 'LL' || up === 'RR') return `[${up.toLowerCase()}]`;
+        if (up.length === 1){
+          if (up === 'Ñ') return 'ñ';
+          if (up >= 'A' && up <= 'Z') return up.toLowerCase();
+        }
+        return null;
+      }
+      function dropRackTokenAtCell(rackIdx, cellIdx){
+        if (rackIdx<0 || rackIdx>=rackTokensArr.length) return;
+        if (cellIdx<0 || cellIdx>=225) return;
+        // Only drop on empty board cells (no existing tile, no pending placement)
+        if ((matchBoardState[cellIdx]||' ').trim()) return;
+        let tk = rackTokensArr[rackIdx];
+        let placeTk = tk;
+        if (tk === '?'){
+          const a = prompt('Asigna letra al comodín (A–Z, Ñ, CH, LL, RR):', 'A');
+          const mapped = placedTokenForBlankAssignment(a||'');
+          if (!mapped) return; // cancel invalid
+          placeTk = mapped;
+        }
+        if (pendingPlacements[cellIdx]){
+          // swap
+          const prev = pendingPlacements[cellIdx];
+          pendingPlacements[cellIdx] = placeTk;
+          rackTokensArr.splice(rackIdx,1, prev);
+        } else {
+          pendingPlacements[cellIdx] = placeTk;
+          // Remove from rack
+          rackTokensArr.splice(rackIdx,1);
+        }
+        rackSelIdx.clear();
+        rebuildRackCounts();
+        // If no start cell yet, anchor it where the user dropped first.
+        if (!startCell){ startCell = { row: Math.floor(cellIdx/15), col: (cellIdx%15) }; }
+        setMatchRackText();
+        renderMatchBoard();
+      }
+      function movePlacementOnBoard(srcIdx, dstIdx){
+        if (srcIdx===dstIdx) return;
+        if (!pendingPlacements[srcIdx]) return;
+        // Only move onto empty board cells (no fixed tile); allow swapping with another placement
+        if ((matchBoardState[dstIdx]||' ').trim()) return;
+        const srcTk = pendingPlacements[srcIdx];
+        const dstTk = pendingPlacements[dstIdx];
+        pendingPlacements[dstIdx] = srcTk;
+        if (dstTk) pendingPlacements[srcIdx] = dstTk; else delete pendingPlacements[srcIdx];
         renderMatchBoard();
       }
       function mapInputToken(raw){
@@ -342,6 +504,10 @@
       }
       document.addEventListener('keydown', (e)=>{
         if(!matchId) return;
+        // Do not hijack typing when the user is focused on an input/textarea/select or contenteditable
+        const ae = document.activeElement;
+        const isEditing = (ae && ((ae.tagName === 'INPUT') || (ae.tagName === 'TEXTAREA') || (ae.tagName === 'SELECT') || ae.isContentEditable));
+        if (isEditing) return;
         const k = e.key;
         if(k === ' '){ // toggle direction quickly
           if (startCell){ placeDir = (placeDir==='H'?'V':'H'); renderMatchBoard(); e.preventDefault(); }
@@ -390,39 +556,105 @@
         const res = await fetch('/matches', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ kwg })});
         const j = await res.json(); matchId = j.id; rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts(); setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}`); initMatchBoard(); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } }
       async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts(); setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; renderMatchBoard(); }
-      async function submitPlay(){ if(!matchId||startCell==null) return; // build word from contiguous placements along dir
+      async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); if(j && Array.isArray(j.rows)){ renderHistory(j.rows); } } catch(_){} }
+      function renderHistory(rows){
+        const div = document.getElementById('matchHistory'); if(!div) return;
+        const mapType = (t)=>{
+          const u = (t||'').toUpperCase();
+          if(u.includes('PASS')) return 'Pasa';
+          if(u.includes('EXCH')) return 'Intercambia';
+          if(u.includes('PLAY')||u.includes('MOVE')) return 'Juega';
+          return t||'';
+        };
+        const toES = (r,c)=> toCoordES(r,c);
+        let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">'+
+          '<thead><tr style="background:#f8fafc">'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">#</th>'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Jugador</th>'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Acción</th>'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Palabra</th>'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Coord</th>'+
+          '<th style="text-align:right;padding:4px;border-bottom:1px solid #e5e7eb">Puntos</th>'+
+          '<th style="text-align:right;padding:4px;border-bottom:1px solid #e5e7eb">Acum</th>'+
+          '</tr></thead><tbody>';
+        for(const row of rows){
+          const who = row.player===0? 'Tú' : 'Bot';
+          const coord = row.row>0 || row.col>0 ? (toES(row.row, row.col) + ' ' + (row.dir||'')) : '';
+          html += '<tr>'+
+            `<td style="padding:4px;border-bottom:1px solid #f1f5f9">${row.ply||''}</td>`+
+            `<td style="padding:4px;border-bottom:1px solid #f1f5f9">${who}</td>`+
+            `<td style="padding:4px;border-bottom:1px solid #f1f5f9">${mapType(row.type)}</td>`+
+            `<td style="padding:4px;border-bottom:1px solid #f1f5f9">${row.word||''}</td>`+
+            `<td style="padding:4px;border-bottom:1px solid #f1f5f9">${coord}</td>`+
+            `<td style="padding:4px;border-bottom:1px solid #f1f5f9;text-align:right">${row.score??''}</td>`+
+            `<td style="padding:4px;border-bottom:1px solid #f1f5f9;text-align:right">${row.cum??''}</td>`+
+          '</tr>';
+        }
+        html += '</tbody></table>';
+        div.innerHTML = html;
+      }
+      async function submitPlay(){ if(!matchId) return; // build word from contiguous placements along dir
         // ensure any buffered key is flushed before submit
         flushPendingKey();
         // determine start index (first placement cell in line)
-        const idxs = Object.keys(pendingPlacements).map(k=>parseInt(k)).sort((a,b)=>a-b);
+        const idxs = Object.keys(pendingPlacements).map(k=>parseInt(k));
         if(!idxs.length) return;
-        let base = idxs[0];
+        // Infer direction if none set by user interaction
+        let dir = placeDir;
+        if (!startCell){
+          const rows = new Set(idxs.map(i=>Math.floor(i/15)));
+          const cols = new Set(idxs.map(i=>i%15));
+          if (rows.size === 1) dir = 'H';
+          else if (cols.size === 1) dir = 'V';
+          else dir = 'H';
+        }
+        // Choose base index at leftmost (H) or topmost (V) among placements
+        let base;
+        if (dir==='H'){
+          base = idxs.reduce((minI,i)=> ((i%15) < (minI%15) ? i : minI), idxs[0]);
+        } else {
+          base = idxs.reduce((minI,i)=> (Math.floor(i/15) < Math.floor(minI/15) ? i : minI), idxs[0]);
+        }
         // walk backwards along direction to include any contiguous existing tiles so coords point to actual word start
         let r = Math.floor(base/15), c = base%15;
-        if (placeDir==='H'){
+        if (dir==='H'){
           while (c-1>=0){ const i = r*15 + (c-1); const tk = (matchBoardState[i]||' ').trim(); if(!tk) break; c--; }
         } else {
           while (r-1>=0){ const i = (r-1)*15 + c; const tk = (matchBoardState[i]||' ').trim(); if(!tk) break; r--; }
         }
-        // build word scanning along dir from first placement while encountering placements or existing tiles; for server we only need placed tiles string (no dots): join pending placements in order
-        let placedOrdered=[]; for(const i of idxs){ placedOrdered.push(pendingPlacements[i]); }
-        const word = placedOrdered.join('');
-        const payload = { word, row: r, col: c, dir: placeDir };
+        // Join placed tiles in board order along the inferred direction
+        const scanOrder = idxs.slice().sort((a,b)=> dir==='H' ? ((a%15)-(b%15)) : (Math.floor(a/15)-Math.floor(b/15)) );
+        const word = scanOrder.map(i=>pendingPlacements[i]).join('');
+        const payload = { word, row: r, col: c, dir };
         const submitBtn = document.getElementById('matchSubmitPlay');
         if (submitBtn) submitBtn.disabled = true;
         try{
           const res = await fetch(`/matches/${matchId}/play`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
           const j = await res.json(); if(j.error){ alert(j.error); return; }
-          await refreshMatch();
+          await refreshMatch(); await refreshHistory();
           // Auto AI move if enabled
           if (document.getElementById('matchAutoAI')?.checked){ await doAIMove(); }
         } finally {
           if (submitBtn) submitBtn.disabled = false;
         }
       }
-      async function doPass(){ if(!matchId) return; const r = await fetch(`/matches/${matchId}/pass`, {method:'POST'}); const j = await r.json(); if(j.error){ alert(j.error); return;} await refreshMatch(); }
-      async function doExchange(){ if(!matchId) return; const tiles = document.getElementById('matchExchangeTiles').value.trim(); if(!tiles) return; const r = await fetch(`/matches/${matchId}/exchange`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({tiles})}); const j = await r.json(); if(j.error){ alert(j.error); return; } await refreshMatch(); }
-      async function doAIMove(){ if(!matchId) return; const mode = aiMode(); const payload = (mode==='sim')? {mode, sim:{iters:300, plies:2, topK:15}} : {mode:'static'}; const r = await fetch(`/matches/${matchId}/ai_move`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)}); const j = await r.json(); if(j.error){ alert(j.error); return; } await refreshMatch(); }
+      async function doPass(){ if(!matchId) return; const r = await fetch(`/matches/${matchId}/pass`, {method:'POST'}); const j = await r.json(); if(j.error){ alert(j.error); return;} await refreshMatch(); await refreshHistory(); }
+      async function doExchange(){
+        if(!matchId) return;
+        const inp = document.getElementById('matchExchangeTiles');
+        const tiles = (inp?.value || '').trim();
+        if(!tiles) return;
+        const res = await fetch(`/matches/${matchId}/exchange`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({tiles})});
+        const j = await res.json();
+        if(j.error){ alert(j.error); return; }
+        // Clear selection and input, then refresh
+        rackSelIdx.clear();
+        if (inp) inp.value = '';
+        await refreshMatch(); await refreshHistory();
+        // Auto AI move if enabled
+        if (document.getElementById('matchAutoAI')?.checked){ await doAIMove(); }
+      }
+      async function doAIMove(){ if(!matchId) return; const mode = aiMode(); const payload = (mode==='sim')? {mode, sim:{iters:300, plies:2, topK:15}} : {mode:'static'}; const r = await fetch(`/matches/${matchId}/ai_move`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)}); const j = await r.json(); if(j.error){ alert(j.error); return; } await refreshMatch(); await refreshHistory(); }
       // Buttons wiring
       window.addEventListener('load', ()=>{
         document.getElementById('matchCreate').onclick=()=>createMatch(false);
@@ -433,9 +665,21 @@
         document.getElementById('matchPass').onclick=doPass;
         document.getElementById('matchExchange').onclick=doExchange;
         document.getElementById('matchAIMove').onclick=doAIMove;
+        document.getElementById('matchHistoryRefresh').onclick=refreshHistory;
         document.getElementById('matchSubmitPlay').onclick=submitPlay;
-        // submit with Enter: play
-        document.addEventListener('keydown', (e)=>{ if(e.key==='Enter' && matchId){ submitPlay(); e.preventDefault(); } });
+        // Submit with Enter: if focused on exchange input, do exchange; otherwise submit play
+        document.addEventListener('keydown', (e)=>{
+          if (!matchId || e.key !== 'Enter') return;
+          const ae = document.activeElement;
+          if (ae && ae.id === 'matchExchangeTiles') {
+            doExchange();
+            e.preventDefault();
+            return;
+          }
+          // Avoid triggering play while typing in other inputs
+          const isEditing = (ae && ((ae.tagName === 'INPUT') || (ae.tagName === 'TEXTAREA') || (ae.tagName === 'SELECT') || ae.isContentEditable));
+          if (!isEditing) { submitPlay(); e.preventDefault(); }
+        });
       });
       const $ = sel => document.querySelector(sel);
       const out = $('#out');
