@@ -328,9 +328,20 @@
       }
       let rackDragPh = null; // DOM placeholder element during rack drag
       let rackJustDraggedAt = 0; // ms timestamp to suppress click after drag
+      let DEBUG_UI = false;
+      (function(){ try{ const u=new URL(window.location.href); DEBUG_UI = (u.searchParams.get('debug')==='1') || (localStorage.getItem('debugUI')==='1'); }catch(_){ } })();
+      const dbg = (...args)=>{ if (DEBUG_UI) console.debug('[UI]', ...args); };
       function clearRackDnDHints(){
         const el = document.getElementById('matchRack'); if(!el) return;
         for (const ch of el.children){ ch.classList?.remove('insert-left','insert-right'); }
+      }
+      function getRackEl(){ return document.getElementById('matchRack'); }
+      function isPlaceholder(el){ return !!(el && el.classList && el.classList.contains('placeholder')); }
+      function computeInsertIndexFromPlaceholder(){
+        const rack = getRackEl(); if(!rack || !rackDragPh) return -1;
+        let idx = 0;
+        for (const ch of rack.children){ if (ch === rackDragPh) break; if (!isPlaceholder(ch)) idx++; }
+        return idx;
       }
       function renderRack(){
         const el = document.getElementById('matchRack');
@@ -388,6 +399,7 @@
               sp.parentNode.insertBefore(rackDragPh, sp);
               sp.classList.add('drag-hide');
             }
+            dbg('rack dragstart', {from: idx});
           });
           sp.addEventListener('dragend', ()=>{ draggingKind = null; rackJustDraggedAt = Date.now(); if(rackDragPh){ rackDragPh.remove(); rackDragPh=null; } clearRackDnDHints(); sp.classList.remove('drag-hide'); });
           sp.addEventListener('dragover', (ev)=>{ ev.preventDefault();
@@ -414,15 +426,18 @@
               if (!info) return;
               if (info.kind === 'rack' && Number.isInteger(info.idx)){
                 const from = info.idx;
-                // Compute target index from placeholder current position in DOM
-                let toBase = Array.prototype.indexOf.call(sp.parentNode.children, rackDragPh);
-                if (toBase < 0) {
+                // Compute target insert index by counting non-placeholder children before placeholder
+                let insertIndex = computeInsertIndexFromPlaceholder();
+                if (insertIndex < 0){
+                  // Fallback to side of hovered tile
                   const rect=sp.getBoundingClientRect(); const x=(ev.clientX||0)-rect.left; const side=(x>rect.width/2)?'right':'left';
-                  toBase = idx + (side==='right'?1:0);
+                  insertIndex = idx + (side==='right'?1:0);
                 }
-                if (from !== toBase && from>=0 && from<rackTokensArr.length){
+                // Adjust for removal if dragging from before the insertion point
+                if (from < insertIndex) insertIndex -= 1;
+                if (from !== insertIndex && from>=0 && from<rackTokensArr.length){
                   const [item] = rackTokensArr.splice(from,1);
-                  const insertAt = (from<toBase)? (toBase-1) : toBase;
+                  const insertAt = insertIndex;
                   rackTokensArr.splice(insertAt, 0, item);
                   rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText();
                 }
