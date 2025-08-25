@@ -510,12 +510,14 @@
       }
       document.addEventListener('keydown', (e)=>{
         if(!matchId) return;
-        if (draggingKind) return; // ignore keystrokes during drag
+        const k = e.key;
+        // Escape: recall all pending placements to rack from anywhere
+        if (k === 'Escape') { recallAll(); e.preventDefault(); return; }
+        if (draggingKind) return; // ignore other keystrokes during drag
         // Do not hijack typing when the user is focused on an input/textarea/select or contenteditable
         const ae = document.activeElement;
         const isEditing = (ae && ((ae.tagName === 'INPUT') || (ae.tagName === 'TEXTAREA') || (ae.tagName === 'SELECT') || ae.isContentEditable));
         if (isEditing) return;
-        const k = e.key;
         if(k === ' '){ // toggle direction quickly
           if (startCell){ placeDir = (placeDir==='H'?'V':'H'); renderMatchBoard(); e.preventDefault(); }
           return;
