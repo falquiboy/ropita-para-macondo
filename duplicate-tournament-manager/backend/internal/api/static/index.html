@@ -34,8 +34,13 @@
       .rack { display: flex; gap: 4px; align-items: center; }
       .tile { min-width: 24px; height: 24px; padding: 0 4px; border-radius: 3px; background: #fff; border: 1px solid #bbb; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; cursor: pointer; user-select: none; }
       .tile.digraph { min-width: 34px; }
-.tile.blank { color: #555; font-style: italic; }
-.tile.selected { outline: 2px solid #10b981; background: #e6fffa; }
+      .tile.blank { color: #555; font-style: italic; }
+      .tile.selected { outline: 2px solid #10b981; background: #e6fffa; }
+      /* DnD push-aside visuals for rack */
+      .tile.placeholder { visibility: hidden; }
+      .tile.drag-hide { display: none; }
+      .tile.insert-left { margin-left: 12px; }
+      .tile.insert-right { margin-right: 12px; }
 /* DnD hint spacing */
 .tile.insert-left { margin-left: 12px; }
 .tile.insert-right { margin-right: 12px; }
@@ -319,12 +324,17 @@
         if (tk.startsWith('[') && tk.endsWith(']')) return tk.slice(1,-1); // CH/LL/RR or lowercase on blank
         return tk;
       }
+      let rackDragPh = null; // DOM placeholder element during rack drag
+      function clearRackDnDHints(){
+        const el = document.getElementById('matchRack'); if(!el) return;
+        for (const ch of el.children){ ch.classList?.remove('insert-left','insert-right'); }
+      }
       function renderRack(){
         const el = document.getElementById('matchRack');
         if (!el) return;
         el.innerHTML = '';
         // Enable dropping to rack container (append dragged tile at end)
-        el.ondragover = (ev)=>{ ev.preventDefault(); };
+        el.ondragover = (ev)=>{ ev.preventDefault(); /* move placeholder to end for clearer space */ if(rackDragPh && el.lastChild !== rackDragPh){ el.appendChild(rackDragPh); } };
         el.ondrop = (ev)=>{
           ev.preventDefault();
           const data = ev.dataTransfer?.getData('text/plain');
@@ -347,6 +357,8 @@
               }
             }
           }catch(_){ /* ignore */ }
+          // cleanup placeholder/hints
+          clearRackDnDHints(); if(rackDragPh){ rackDragPh.remove(); rackDragPh=null; }
         };
         rackTokensArr.forEach((tk, idx)=>{
           const sp = document.createElement('span');
@@ -359,10 +371,32 @@
           sp.addEventListener('dragstart', (ev)=>{
             draggingKind = 'rack';
             ev.dataTransfer?.setData('text/plain', JSON.stringify({kind:'rack', idx}));
-            try { ev.dataTransfer?.setDragImage(sp, 12, 12); } catch(_){ }
+            try {
+              // Minimal drag image to reduce OS ghost
+              const cv=document.createElement('canvas'); cv.width=cv.height=1; ev.dataTransfer?.setDragImage(cv, 0, 0);
+            } catch(_){ }
+            // Insert placeholder with same size, hide original tile for push-aside effect
+            if (!rackDragPh){
+              rackDragPh = document.createElement('span');
+              rackDragPh.className = 'tile placeholder' + ((lbl.length>1)?' digraph':'');
+              rackDragPh.style.width = sp.offsetWidth + 'px';
+              rackDragPh.style.height = sp.offsetHeight + 'px';
+              sp.parentNode.insertBefore(rackDragPh, sp);
+              sp.classList.add('drag-hide');
+            }
           });
-          sp.addEventListener('dragend', ()=>{ draggingKind = null; });
+          sp.addEventListener('dragend', ()=>{ draggingKind = null; if(rackDragPh){ rackDragPh.remove(); rackDragPh=null; } clearRackDnDHints(); sp.classList.remove('drag-hide'); });
           sp.addEventListener('dragover', (ev)=>{ ev.preventDefault();
+            // Move placeholder before/after this tile based on pointer side
+            if (rackDragPh){
+              const rect=sp.getBoundingClientRect(); const x=(ev.clientX||0)-rect.left; const right=(x>rect.width/2);
+              if (right){
+                if (sp.nextSibling !== rackDragPh) sp.parentNode.insertBefore(rackDragPh, sp.nextSibling);
+              } else {
+                if (sp.previousSibling !== rackDragPh) sp.parentNode.insertBefore(rackDragPh, sp);
+              }
+            }
+            // Visual hint margins
             const side = (function(){ try{ const rect=sp.getBoundingClientRect(); const x=(ev.clientX||0)-rect.left; return (x>rect.width/2)?'right':'left'; }catch(_){ return 'right'; } })();
             sp.classList.toggle('insert-left', side==='left');
             sp.classList.toggle('insert-right', side==='right');
@@ -376,8 +410,12 @@
               if (!info) return;
               if (info.kind === 'rack' && Number.isInteger(info.idx)){
                 const from = info.idx;
-                const rect=sp.getBoundingClientRect(); const x=(ev.clientX||0)-rect.left; const side=(x>rect.width/2)?'right':'left';
-                let toBase = idx + (side==='right'?1:0);
+                // Compute target index from placeholder current position in DOM
+                let toBase = Array.prototype.indexOf.call(sp.parentNode.children, rackDragPh);
+                if (toBase < 0) {
+                  const rect=sp.getBoundingClientRect(); const x=(ev.clientX||0)-rect.left; const side=(x>rect.width/2)?'right':'left';
+                  toBase = idx + (side==='right'?1:0);
+                }
                 if (from !== toBase && from>=0 && from<rackTokensArr.length){
                   const [item] = rackTokensArr.splice(from,1);
                   const insertAt = (from<toBase)? (toBase-1) : toBase;
@@ -395,7 +433,7 @@
                 }
               }
             }catch(_){ /* ignore */ }
-            sp.classList.remove('insert-left','insert-right');
+            sp.classList.remove('insert-left','insert-right'); if(rackDragPh){ rackDragPh.remove(); rackDragPh=null; } clearRackDnDHints();
           });
           sp.addEventListener('click', (ev)=>{
             if (draggingKind) { ev.preventDefault(); return; }
