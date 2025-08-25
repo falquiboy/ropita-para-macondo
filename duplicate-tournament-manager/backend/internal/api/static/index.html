@@ -432,8 +432,14 @@
       }
       function onMatchCellClick(idx){
         const row=Math.floor(idx/15), col=idx%15;
-        if(startCell==null){ startCell={row,col}; placeDir = 'H'; }
-        else { startCell={row,col}; placeDir = (placeDir==='H'?'V':'H'); }
+        const occupied = !!((matchBoardState[idx]||' ').trim() || pendingPlacements[idx]);
+        if (occupied) return; // indicator solo en celdas vacías
+        if (!startCell || startCell.row!==row || startCell.col!==col){
+          startCell={row,col}; // no cambia la dirección; se mantiene la intención actual
+        } else {
+          // clic repetido en la misma celda vacía: alterna dirección como comodidad
+          placeDir = (placeDir==='H'?'V':'H');
+        }
         renderMatchBoard();
       }
       function placedTokenForBlankAssignment(assign){
@@ -571,8 +577,14 @@
         const kwgSel = document.getElementById('matchKwgPreset');
         const kwg = (kwgSel && kwgSel.value) ? kwgSel.value : '';
         const res = await fetch('/matches', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ kwg })});
-        const j = await res.json(); matchId = j.id; rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts(); setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}`); initMatchBoard(); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } }
-      async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts(); setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; startCell=null; placeDir='H'; renderMatchBoard(); }
+        const j = await res.json(); matchId = j.id; rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts();
+        // Aplicar orden persistente del rack
+        try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
+        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}`); initMatchBoard(); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } }
+      async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts();
+        // Reaplicar orden persistente del rack en cada surtido
+        try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
+        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; startCell=null; placeDir='H'; renderMatchBoard(); }
       async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); if(j && Array.isArray(j.rows)){ renderHistoryGrouped(j.rows); } } catch(_){} }
       function renderHistory(rows){
         const div = document.getElementById('matchHistory'); if(!div) return;
@@ -721,7 +733,11 @@
         document.getElementById('matchSubmitPlay').onclick=submitPlay;
         // Rack order change
         const ordSel = document.getElementById('matchRackOrder');
-        if (ordSel) ordSel.onchange = ()=>{ applyRackOrder(ordSel.value||'none'); };
+        if (ordSel){
+          // cargar preferencia guardada
+          try{ const saved = localStorage.getItem('rackOrder'); if(saved){ ordSel.value=saved; applyRackOrder(saved); } }catch(_){ }
+          ordSel.onchange = ()=>{ const v=ordSel.value||'none'; try{ localStorage.setItem('rackOrder', v); }catch(_){ } applyRackOrder(v); };
+        }
         // Submit with Enter: if focused on exchange input, do exchange; otherwise submit play
         document.addEventListener('keydown', (e)=>{
           if (!matchId || e.key !== 'Enter') return;
