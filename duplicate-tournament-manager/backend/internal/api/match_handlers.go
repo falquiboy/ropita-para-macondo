@@ -7,7 +7,6 @@ import (
     "sync"
 
     "dupman/backend/internal/match"
-    pb "github.com/domino14/macondo/gen/api/proto/macondo"
     "github.com/domino14/word-golib/tilemapping"
 )
 
@@ -161,15 +160,11 @@ func (m *MatchHandlers) ScoreSheet(w http.ResponseWriter, r *http.Request){
     id := m.pathID(r.URL.Path)
     m.mu.RLock(); s := m.byID[id]; m.mu.RUnlock()
     if s==nil { writeJSON(w,http.StatusNotFound, map[string]string{"error":"not found"}); return }
-    h := s.Game.History()
     type Row struct { Ply int `json:"ply"`; Player int `json:"player"`; Type string `json:"type"`; Word string `json:"word"`; Row int `json:"row"`; Col int `json:"col"`; Dir string `json:"dir"`; Score int `json:"score"`; Cum int `json:"cum"` }
-    rows := make([]Row, 0, len(h.GetEvents()))
-    for i, e := range h.GetEvents(){
-        t := e.GetType().String()
-        word := ""
-        if len(e.GetWordsFormed())>0 { word = e.GetWordsFormed()[0] }
-        dir := "H"; if e.GetDirection() == pb.GameEvent_VERTICAL { dir = "V" }
-        rows = append(rows, Row{ Ply:i+1, Player:int(e.GetPlayerIndex()), Type:t, Word:word, Row:int(e.GetRow()), Col:int(e.GetColumn()), Dir:dir, Score:int(e.GetScore()), Cum:int(e.GetCumulative()) })
+    sr := s.ScoreRows()
+    rows := make([]Row, 0, len(sr))
+    for _, e := range sr {
+        rows = append(rows, Row{ Ply:e.Ply, Player:e.Player, Type:e.Type, Word:e.Word, Row:e.Row, Col:e.Col, Dir:e.Dir, Score:e.Score, Cum:e.Cum })
     }
     writeJSON(w, http.StatusOK, map[string]any{ "id": s.ID, "rows": rows })
 }

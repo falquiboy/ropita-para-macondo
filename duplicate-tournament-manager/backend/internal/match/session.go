@@ -43,6 +43,22 @@ type Session struct {
     // helpers
     sp  *aitp.AIStaticTurnPlayer
     csc *equity.CombinedStaticCalculator
+
+    // minimal in-memory history fallback when engine history isn't populated
+    hist []HistRow
+}
+
+// HistRow is a lightweight move/event record for UI scoresheet.
+type HistRow struct {
+    Ply    int
+    Player int
+    Type   string // PLAY, PASS, EXCH
+    Word   string // primary word or tiles/exchanged letters
+    Row    int
+    Col    int
+    Dir    string // H or V
+    Score  int
+    Cum    int
 }
 
 // NewSession creates a new macondo game for Spanish OSPS rules
@@ -131,7 +147,9 @@ func (s *Session) PlayHuman(word string, c Coords) (*move.Move, error) {
             // TilesString includes anchors; compare word ignoring '.'
             tiles := strings.ReplaceAll(pm.TilesString(), ".", "")
             if equalWord(tiles, word) {
+                player := int(s.Game.PlayerOnTurn())
                 if err := s.Game.PlayMove(pm, false, 0); err != nil { return nil, err }
+                s.recordPlayEvent(player, pm)
                 return pm, nil
             }
         }
@@ -149,7 +167,9 @@ func (s *Session) PlayHuman(word string, c Coords) (*move.Move, error) {
     }
     if only != nil {
         if os.Getenv("DEBUG_MATCH") == "1" { log.Printf("fallback accepting candidate at coords; want=%q", word) }
+        player := int(s.Game.PlayerOnTurn())
         if err := s.Game.PlayMove(only, false, 0); err != nil { return nil, err }
+        s.recordPlayEvent(player, only)
         return only, nil
     }
     if os.Getenv("DEBUG_MATCH") == "1" {
@@ -226,23 +246,31 @@ func (s *Session) Exchange(letters string) error {
         if rack.CountOf(ml) == 0 { return errors.New("tile not in rack") }
     }
     // Build a specific exchange move
-    em, err := s.sp.BaseTurnPlayer.NewExchangeMove(s.Game.PlayerOnTurn(), letters)
+    pi := s.Game.PlayerOnTurn(); p := int(pi)
+    em, err := s.sp.BaseTurnPlayer.NewExchangeMove(pi, letters)
     if err != nil { return err }
-    return s.Game.PlayMove(em, false, 0)
+    if err := s.Game.PlayMove(em, false, 0); err != nil { return err }
+    // Record minimal exchange event (score 0)
+    s.appendHist(HistRow{ Ply: len(s.hist)+1, Player: int(p), Type: "EXCH", Word: letters, Row: 0, Col: 0, Dir: "", Score: 0, Cum: s.cumulativeFor(int(p)) })
+    return nil
 }
 
 // Pass the turn
 func (s *Session) Pass() error {
     s.mu.Lock(); defer s.mu.Unlock()
-    pm, err := s.sp.BaseTurnPlayer.NewPassMove(s.Game.PlayerOnTurn())
+    pi := s.Game.PlayerOnTurn(); p := int(pi)
+    pm, err := s.sp.BaseTurnPlayer.NewPassMove(pi)
     if err != nil { return err }
-    return s.Game.PlayMove(pm, false, 0)
+    if err := s.Game.PlayMove(pm, false, 0); err != nil { return err }
+    s.appendHist(HistRow{ Ply: len(s.hist)+1, Player: int(p), Type: "PASS", Word: "", Row: 0, Col: 0, Dir: "", Score: 0, Cum: s.cumulativeFor(int(p)) })
+    return nil
 }
 
 // AIMove makes an AI move using either static or simulation mode.
 func (s *Session) AIMove(mode AIMode, simIters, simPlies, topK int) (*move.Move, error) {
     s.mu.Lock(); defer s.mu.Unlock()
-    rack := s.Game.RackFor(s.Game.PlayerOnTurn())
+    pi := s.Game.PlayerOnTurn(); p := int(pi)
+    rack := s.Game.RackFor(pi)
     s.sp.MoveGenerator().GenAll(rack, true)
     plays := s.sp.MoveGenerator().(*movegen.GordonGenerator).Plays()
     if len(plays) == 0 { return nil, errors.New("no plays") }
@@ -269,7 +297,82 @@ func (s *Session) AIMove(mode AIMode, simIters, simPlies, topK int) (*move.Move,
         best = sp.Move()
     }
     if err := s.Game.PlayMove(best, false, 0); err != nil { return nil, err }
+    s.recordPlayEvent(p, best)
     return best, nil
 }
 
 func min(a,b int) int { if a<b { return a }; return b }
+
+// recordPlayEvent appends a PLAY event to fallback history.
+func (s *Session) recordPlayEvent(player int, pm *move.Move){
+    r, c, v := pm.CoordsAndVertical()
+    dir := "H"; if v { dir = "V" }
+    // TilesString returns anchors and lowercase blanks; strip anchors
+    tiles := strings.ReplaceAll(pm.TilesString(), ".", "")
+    // Derive main word formed from the board after applying the move
+    word := s.mainWordAt(r, c, dir)
+    sc := pm.Score()
+    // Cum score after this move for the player
+    // We compute cumulative from game directly to be accurate
+    cum := s.Game.PointsFor(player)
+    if word == "" { word = tiles }
+    s.appendHist(HistRow{ Ply: len(s.hist)+1, Player: player, Type: "PLAY", Word: word, Row: r, Col: c, Dir: dir, Score: sc, Cum: cum })
+}
+
+func (s *Session) appendHist(h HistRow){ s.hist = append(s.hist, h) }
+
+func (s *Session) cumulativeFor(player int) int { return s.Game.PointsFor(player) }
+
+// ScoreRows returns a minimal scoresheet either from engine history or from fallback history.
+func (s *Session) ScoreRows() []HistRow {
+    h := s.Game.History()
+    evs := h.GetEvents()
+    if len(evs) > 0 {
+        rows := make([]HistRow, 0, len(evs))
+        for i, e := range evs {
+            t := e.GetType().String()
+            word := ""
+            if ws := e.GetWordsFormed(); len(ws) > 0 { word = ws[0] }
+            dir := "H"
+            if e.GetDirection() == pb.GameEvent_VERTICAL { dir = "V" }
+            rows = append(rows, HistRow{
+                Ply: i+1, Player: int(e.GetPlayerIndex()), Type: t, Word: word,
+                Row: int(e.GetRow()), Col: int(e.GetColumn()), Dir: dir,
+                Score: int(e.GetScore()), Cum: int(e.GetCumulative()),
+            })
+        }
+        return rows
+    }
+    // fallback
+    return append([]HistRow(nil), s.hist...)
+}
+
+// mainWordAt scans the board starting at (row,col) along dir to extract the full
+// word formed (including pre-existing anchors). Returns bracket-aware tokens
+// from the game's Alphabet, e.g., "PAN[CH]O".
+func (s *Session) mainWordAt(row, col int, dir string) string {
+    b := s.Game.Board()
+    alph := s.Game.Alphabet()
+    r, c := row, col
+    // Move to true start by walking backwards until empty
+    if strings.ToUpper(dir) == "H" {
+        for cc := c - 1; cc >= 0; cc-- { if b.GetLetter(r, cc) == 0 { break }; c = cc }
+        // Build forward
+        var out strings.Builder
+        for cc := c; cc < 15; cc++ {
+            ml := b.GetLetter(r, cc)
+            if ml == 0 { break }
+            out.WriteString(alph.Letter(ml))
+        }
+        return out.String()
+    }
+    // Vertical
+    for rr := r - 1; rr >= 0; rr-- { if b.GetLetter(rr, c) == 0 { break }; r = rr }
+    var out strings.Builder
+    for rr := r; rr < 15; rr++ {
+        ml := b.GetLetter(rr, c)
+        if ml == 0 { break }
+        out.WriteString(alph.Letter(ml))
+    }
+    return out.String()
+}
