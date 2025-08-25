@@ -68,6 +68,7 @@
           <option value="alpha">Alfabético</option>
           <option value="vowels">Vocales primero</option>
           <option value="es">Español trad.</option>
+          <option value="random">Aleatorio</option>
         </select>
       </label>
       <button id="matchSubmitPlay" title="Enviar jugada (Enter)">Jugar</button>
@@ -816,6 +817,11 @@
       }
       function applyRackOrder(order){
         if (!order || order==='none') return;
+        if (order==='random'){
+          // Fisher-Yates shuffle
+          for(let i=rackTokensArr.length-1; i>0; i--){ const j=Math.floor(Math.random()*(i+1)); [rackTokensArr[i], rackTokensArr[j]] = [rackTokensArr[j], rackTokensArr[i]]; }
+          rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText(); return;
+        }
         const vowels = new Set(['A','E','I','O','U']);
         const esOrder = ['A','B','C','CH','D','E','F','G','H','I','J','L','LL','M','N','Ñ','O','P','Q','R','RR','S','T','U','V','X','Y','Z'];
         const esIndex = {}; esOrder.forEach((s,i)=>{ esIndex[s]=i; });
