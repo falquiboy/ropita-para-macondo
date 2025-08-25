@@ -198,6 +198,7 @@
       let pendingKey = null; // a single uppercase letter waiting to possibly merge
       let pendingKeyTimer = null;
       let matchBonusRows = null; // 15 strings from server with bonus codes
+      let draggingKind = null; // 'rack' | 'board' | null
 
       function initMatchBoard() {
         if (!matchBoardEl) matchBoardEl = document.getElementById('matchBoard');
@@ -210,7 +211,7 @@
           // Allow dropping tiles from rack onto empty cells
           d.addEventListener('dragover', (ev)=>{ ev.preventDefault(); });
           d.addEventListener('drop', (ev)=>{
-            ev.preventDefault();
+            ev.preventDefault(); ev.stopPropagation();
             const data = ev.dataTransfer?.getData('text/plain');
             try{
               const info = JSON.parse(data||'{}');
@@ -245,10 +246,12 @@
           // Make newly placed tiles draggable; fixed tiles are not draggable
           if (placed){
             cells[i].draggable = true;
-            cells[i].ondragstart = (ev)=>{ ev.dataTransfer?.setData('text/plain', JSON.stringify({kind:'board', idx:i})); };
+            cells[i].ondragstart = (ev)=>{ draggingKind='board'; ev.dataTransfer?.setData('text/plain', JSON.stringify({kind:'board', idx:i})); };
+            cells[i].ondragend = ()=>{ draggingKind=null; };
           } else {
             cells[i].draggable = false;
             cells[i].ondragstart = null;
+            cells[i].ondragend = null;
           }
           // remove any previous arrow
           const prev = cells[i].querySelector('.dir-arrow'); if (prev) prev.remove();
@@ -341,12 +344,14 @@
           // Drag-and-drop reorder and drag to board
           sp.setAttribute('draggable', 'true');
           sp.addEventListener('dragstart', (ev)=>{
+            draggingKind = 'rack';
             ev.dataTransfer?.setData('text/plain', JSON.stringify({kind:'rack', idx}));
             try { ev.dataTransfer?.setDragImage(sp, 12, 12); } catch(_){ }
           });
+          sp.addEventListener('dragend', ()=>{ draggingKind = null; });
           sp.addEventListener('dragover', (ev)=>{ ev.preventDefault(); });
           sp.addEventListener('drop', (ev)=>{
-            ev.preventDefault();
+            ev.preventDefault(); ev.stopPropagation();
             const data = ev.dataTransfer?.getData('text/plain');
             try{
               const info = JSON.parse(data||'{}');
@@ -372,6 +377,7 @@
             }catch(_){ /* ignore */ }
           });
           sp.addEventListener('click', (ev)=>{
+            if (draggingKind) { ev.preventDefault(); return; }
             if (startCell){
               tryPlaceToken(tk);
               return;
@@ -504,6 +510,7 @@
       }
       document.addEventListener('keydown', (e)=>{
         if(!matchId) return;
+        if (draggingKind) return; // ignore keystrokes during drag
         // Do not hijack typing when the user is focused on an input/textarea/select or contenteditable
         const ae = document.activeElement;
         const isEditing = (ae && ((ae.tagName === 'INPUT') || (ae.tagName === 'TEXTAREA') || (ae.tagName === 'SELECT') || ae.isContentEditable));
