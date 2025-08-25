@@ -10,7 +10,7 @@
       .row { display: flex; gap: 1rem; align-items: center; margin-bottom: 0.5rem; }
       .grid { display: grid; grid-template-columns: repeat(15, var(--cell-size)); gap: var(--gap); margin-top: 0.25rem; }
       .cell { position: relative; width: var(--cell-size); height: var(--cell-size); box-sizing: border-box; background: #f2f2f2; border: 1px solid #ddd; font-size: 12px; display: flex; align-items: center; justify-content: center; }
-      .cell.start { outline: 2px solid #3b82f6; }
+      .cell.start { outline: none; }
       .cell .dir-arrow {
         position: absolute; inset: 0;
         display: flex; align-items: center; justify-content: center;
@@ -56,12 +56,21 @@
     <div class="row">
       <button id="matchShuffle">Shuffle Rack</button>
       <button id="matchRecall">Recall (ultimo)</button>
-      <button id="matchRecallAll">Recall (todos)</button>
+      <button id="matchRecallAll" title="Esc: devolver todas las fichas al atril">Recall (todos) (Esc)</button>
       <button id="matchPass">Pasar</button>
       <button id="matchExchange">Intercambiar</button>
       <input id="matchExchangeTiles" type="text" placeholder="Tiles a cambiar (ej: AE)" style="width:12rem"/>
       <button id="matchAIMove">AI mueve</button>
       <select id="matchAIMode"><option value="static">Hasty</option><option value="sim">Sim</option></select>
+      <label>Orden rack
+        <select id="matchRackOrder">
+          <option value="none">— Orden —</option>
+          <option value="alpha">Alfabético</option>
+          <option value="vowels">Vocales primero</option>
+          <option value="es">Español trad.</option>
+          <option value="random">Aleatorio</option>
+        </select>
+      </label>
       <button id="matchSubmitPlay" title="Enviar jugada (Enter)">Jugar</button>
       <label style="display:flex;align-items:center;gap:4px"><input id="matchAutoAI" type="checkbox"/> Auto AI</label>
     </div>
@@ -84,7 +93,7 @@
       <div style="display:flex;flex-direction:column">
         <div class="coords-row" id="matchTopCoords"></div>
         <div class="grid" id="matchBoard"></div>
-        <div style="margin-top:4px;font-size:12px;color:#6b7280">Inicio: <span id="matchCoordLabel">—</span></div>
+        <div style="margin-top:4px;font-size:12px;color:#6b7280" title="Barra espaciadora: cambia dirección de tipeo">Inicio: <span id="matchCoordLabel">—</span></div>
       </div>
     </div>
     <div class="row">
@@ -238,6 +247,7 @@
       function bonusAtIndex(i){ if(!matchBonusRows) return null; const r=(i/15)|0, c=i%15; const row=matchBonusRows[r]||''; const ch=row.charAt(c)||' '; switch(ch){ case '-': return 'DW'; case '=': return 'TW'; case '"': return 'TL'; case "'": return 'DL'; case '~': return '4W'; case '^': return '4L'; default: return null; } }
       function renderMatchBoard(){
         const cells = matchBoardEl.children;
+        const hasPending = Object.keys(pendingPlacements).length > 0;
         for(let i=0;i<225;i++){
           const tk = matchBoardState[i] || ' ';
           const placed = pendingPlacements[i];
@@ -260,10 +270,10 @@
           const prevB = cells[i].querySelector('.bonus'); if (prevB) prevB.remove();
           const prevS = cells[i].querySelector('.star'); if (prevS) prevS.remove();
           cells[i].classList.remove('tw','dw','tl','dl','center','occ');
-          // add arrow on start cell
-          if (startCell){
+          // add arrow on start cell (typing aid only). Hide once there is any pending placement or if occupied
+          if (startCell && !hasPending){
             const si = startCell.row*15 + startCell.col;
-            if (i === si){
+            if (i === si && !(placed || (tk && tk.trim()))){
               cells[i].classList.add('start');
               const span = document.createElement('span');
               span.className = 'dir-arrow';
@@ -345,8 +355,9 @@
           sp.setAttribute('draggable', 'true');
           sp.addEventListener('dragstart', (ev)=>{
             draggingKind = 'rack';
-            ev.dataTransfer?.setData('text/plain', JSON.stringify({kind:'rack', idx}));
-            try { ev.dataTransfer?.setDragImage(sp, 12, 12); } catch(_){ }
+            try { ev.dataTransfer.effectAllowed = 'move'; } catch(_){ }
+            try { ev.dataTransfer?.setData('text/plain', JSON.stringify({kind:'rack', idx})); } catch(_){ }
+            try { const cv=document.createElement('canvas'); cv.width=cv.height=1; ev.dataTransfer?.setDragImage(cv, 0, 0); } catch(_){ }
           });
           sp.addEventListener('dragend', ()=>{ draggingKind = null; });
           sp.addEventListener('dragover', (ev)=>{ ev.preventDefault(); });
@@ -423,8 +434,14 @@
       }
       function onMatchCellClick(idx){
         const row=Math.floor(idx/15), col=idx%15;
-        if(startCell==null){ startCell={row,col}; placeDir = 'H'; }
-        else { startCell={row,col}; placeDir = (placeDir==='H'?'V':'H'); }
+        const occupied = !!((matchBoardState[idx]||' ').trim() || pendingPlacements[idx]);
+        if (occupied) return; // indicator solo en celdas vacías
+        if (!startCell || startCell.row!==row || startCell.col!==col){
+          startCell={row,col}; // no cambia la dirección; se mantiene la intención actual
+        } else {
+          // clic repetido en la misma celda vacía: alterna dirección como comodidad
+          placeDir = (placeDir==='H'?'V':'H');
+        }
         renderMatchBoard();
       }
       function placedTokenForBlankAssignment(assign){
@@ -462,8 +479,7 @@
         }
         rackSelIdx.clear();
         rebuildRackCounts();
-        // If no start cell yet, anchor it where the user dropped first.
-        if (!startCell){ startCell = { row: Math.floor(cellIdx/15), col: (cellIdx%15) }; }
+        // Do not move the typing indicator on DnD; it's for keyboard placement only.
         setMatchRackText();
         renderMatchBoard();
       }
@@ -510,12 +526,14 @@
       }
       document.addEventListener('keydown', (e)=>{
         if(!matchId) return;
-        if (draggingKind) return; // ignore keystrokes during drag
+        const k = e.key;
+        // Escape: recall all pending placements to rack from anywhere
+        if (k === 'Escape') { recallAll(); e.preventDefault(); return; }
+        if (draggingKind) return; // ignore other keystrokes during drag
         // Do not hijack typing when the user is focused on an input/textarea/select or contenteditable
         const ae = document.activeElement;
         const isEditing = (ae && ((ae.tagName === 'INPUT') || (ae.tagName === 'TEXTAREA') || (ae.tagName === 'SELECT') || ae.isContentEditable));
         if (isEditing) return;
-        const k = e.key;
         if(k === ' '){ // toggle direction quickly
           if (startCell){ placeDir = (placeDir==='H'?'V':'H'); renderMatchBoard(); e.preventDefault(); }
           return;
@@ -561,9 +579,15 @@
         const kwgSel = document.getElementById('matchKwgPreset');
         const kwg = (kwgSel && kwgSel.value) ? kwgSel.value : '';
         const res = await fetch('/matches', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ kwg })});
-        const j = await res.json(); matchId = j.id; rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts(); setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}`); initMatchBoard(); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } }
-      async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts(); setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; renderMatchBoard(); }
-      async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); if(j && Array.isArray(j.rows)){ renderHistory(j.rows); } } catch(_){} }
+        const j = await res.json(); matchId = j.id; rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts();
+        // Aplicar orden persistente del rack
+        try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
+        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}`); initMatchBoard(); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } }
+      async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts();
+        // Reaplicar orden persistente del rack en cada surtido
+        try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
+        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; startCell=null; placeDir='H'; renderMatchBoard(); }
+      async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); if(j && Array.isArray(j.rows)){ renderHistoryGrouped(j.rows); } } catch(_){} }
       function renderHistory(rows){
         const div = document.getElementById('matchHistory'); if(!div) return;
         const mapType = (t)=>{
@@ -600,21 +624,56 @@
         html += '</tbody></table>';
         div.innerHTML = html;
       }
-      async function submitPlay(){ if(!matchId) return; // build word from contiguous placements along dir
+      // New grouped renderer: both players in the same row per round, coords per convention with arrow glyph
+      function renderHistoryGrouped(rows){
+        const div = document.getElementById('matchHistory'); if(!div) return;
+        const icon = (d)=> (String(d||'H').toUpperCase()==='V' ? '↓' : '→');
+        const rounds = [];
+        for (const r of (rows||[])){
+          const idx = Math.floor(((r.ply||1)-1)/2);
+          if (!rounds[idx]) rounds[idx] = { n: idx+1, you: null, bot: null };
+          const cell = { word: r.word||'', coord: (r.row>=0 && r.col>=0) ? (coordsStr(r.row, r.col, r.dir) + ' ' + icon(r.dir)) : '', score: r.score||0, type: (r.type||'').toUpperCase(), cum: r.cum||0 };
+          if (r.player === 0) rounds[idx].you = cell; else rounds[idx].bot = cell;
+        }
+        let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">'+
+          '<thead><tr style="background:#f8fafc">'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Ronda</th>'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Tú</th>'+
+          '<th style="text-align:right;padding:4px;border-bottom:1px solid #e5e7eb">Pts</th>'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Coord</th>'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Bot</th>'+
+          '<th style="text-align:right;padding:4px;border-bottom:1px solid #e5e7eb">Pts</th>'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Coord</th>'+
+          '</tr></thead><tbody>';
+        for (const r of rounds){ if(!r) continue; const y=r.you||{}, b=r.bot||{};
+          const yt = y.type==='PASS'?'Pasa': y.type==='EXCH' ? ('Intercambia '+(y.word||'')) : (y.word||'');
+          const bt = b.type==='PASS'?'Pasa': b.type==='EXCH' ? ('Intercambia '+(b.word||'')) : (b.word||'');
+          html += '<tr>'+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${r.n}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${yt}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9;text-align:right\">${y.score||''}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${y.coord||''}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${bt}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9;text-align:right\">${b.score||''}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${b.coord||''}</td>`+
+          '</tr>';
+        }
+        html += '</tbody></table>';
+        div.innerHTML = html;
+      }
+      async function submitPlay(){ if(!matchId) return; // indicator is for typing only; infer direction from placements
         // ensure any buffered key is flushed before submit
         flushPendingKey();
         // determine start index (first placement cell in line)
         const idxs = Object.keys(pendingPlacements).map(k=>parseInt(k));
         if(!idxs.length) return;
-        // Infer direction if none set by user interaction
-        let dir = placeDir;
-        if (!startCell){
-          const rows = new Set(idxs.map(i=>Math.floor(i/15)));
-          const cols = new Set(idxs.map(i=>i%15));
-          if (rows.size === 1) dir = 'H';
-          else if (cols.size === 1) dir = 'V';
-          else dir = 'H';
-        }
+        // Infer direction from placements only
+        let dir;
+        const rows = new Set(idxs.map(i=>Math.floor(i/15)));
+        const cols = new Set(idxs.map(i=>i%15));
+        if (rows.size === 1) dir = 'H';
+        else if (cols.size === 1) dir = 'V';
+        else dir = 'H';
         // Choose base index at leftmost (H) or topmost (V) among placements
         let base;
         if (dir==='H'){
@@ -674,6 +733,13 @@
         document.getElementById('matchAIMove').onclick=doAIMove;
         document.getElementById('matchHistoryRefresh').onclick=refreshHistory;
         document.getElementById('matchSubmitPlay').onclick=submitPlay;
+        // Rack order change
+        const ordSel = document.getElementById('matchRackOrder');
+        if (ordSel){
+          // cargar preferencia guardada
+          try{ const saved = localStorage.getItem('rackOrder'); if(saved){ ordSel.value=saved; applyRackOrder(saved); } }catch(_){ }
+          ordSel.onchange = ()=>{ const v=ordSel.value||'none'; try{ localStorage.setItem('rackOrder', v); }catch(_){ } applyRackOrder(v); };
+        }
         // Submit with Enter: if focused on exchange input, do exchange; otherwise submit play
         document.addEventListener('keydown', (e)=>{
           if (!matchId || e.key !== 'Enter') return;
@@ -738,9 +804,53 @@
       function log(obj) { out.textContent = (typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2)) + "\n" + out.textContent; }
 
       function coordsStr(row, col, dir){
-        const r = (row|0) + 1;
-        const c = String.fromCharCode('A'.charCodeAt(0) + (col|0));
-        return dir === 'V' ? (c + r) : (r + c);
+        // Convention: letter first => horizontal (e.g., H4); number first => vertical (e.g., 4H)
+        const num = (col|0) + 1;
+        const letc = String.fromCharCode('A'.charCodeAt(0) + (row|0));
+        return (String(dir||'H').toUpperCase()==='V') ? (String(num) + letc) : (letc + String(num));
+      }
+
+      function tokenKey(tk){
+        if (!tk) return '';
+        if (tk === '?') return '?';
+        if (tk.startsWith('[') && tk.endsWith(']')) return tk.slice(1,-1).toUpperCase();
+        return tk.toUpperCase();
+      }
+      function applyRackOrder(order){
+        if (!order || order==='none') return;
+        if (order==='random'){
+          // Fisher-Yates shuffle
+          for(let i=rackTokensArr.length-1; i>0; i--){ const j=Math.floor(Math.random()*(i+1)); [rackTokensArr[i], rackTokensArr[j]] = [rackTokensArr[j], rackTokensArr[i]]; }
+          rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText(); return;
+        }
+        const vowels = new Set(['A','E','I','O','U']);
+        const esOrder = ['A','B','C','CH','D','E','F','G','H','I','J','L','LL','M','N','Ñ','O','P','Q','R','RR','S','T','U','V','X','Y','Z'];
+        const esIndex = {}; esOrder.forEach((s,i)=>{ esIndex[s]=i; });
+        const rank = (tk)=>{
+          const key = tokenKey(tk);
+          if (order==='alpha'){
+            // '?' last
+            return [key==='?'? 1:0, key];
+          } else if (order==='vowels'){
+            const grp = vowels.has(key)? 0 : 1;
+            return [grp, key==='?'? 2:1, key];
+          } else if (order==='es'){
+            const idx = (key in esIndex)? esIndex[key] : 999;
+            return [0, idx, key==='?'? 2:1, key];
+          }
+          return [0, key];
+        };
+        rackTokensArr.sort((a,b)=>{
+          const ra = rank(a), rb = rank(b);
+          for (let i=0;i<Math.max(ra.length, rb.length); i++){
+            const av = ra[i]||0, bv = rb[i]||0;
+            if (av < bv) return -1; if (av > bv) return 1;
+          }
+          return 0;
+        });
+        rackSelIdx.clear();
+        rebuildRackCounts();
+        setMatchRackText();
       }
 
       function getRowsFromGrid(){
