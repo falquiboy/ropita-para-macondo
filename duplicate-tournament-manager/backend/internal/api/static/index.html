@@ -10,7 +10,7 @@
       .row { display: flex; gap: 1rem; align-items: center; margin-bottom: 0.5rem; }
       .grid { display: grid; grid-template-columns: repeat(15, var(--cell-size)); gap: var(--gap); margin-top: 0.25rem; }
       .cell { position: relative; width: var(--cell-size); height: var(--cell-size); box-sizing: border-box; background: #f2f2f2; border: 1px solid #ddd; font-size: 12px; display: flex; align-items: center; justify-content: center; }
-      .cell.start { outline: 2px solid #3b82f6; }
+      .cell.start { outline: none; }
       .cell .dir-arrow {
         position: absolute; inset: 0;
         display: flex; align-items: center; justify-content: center;
@@ -238,6 +238,7 @@
       function bonusAtIndex(i){ if(!matchBonusRows) return null; const r=(i/15)|0, c=i%15; const row=matchBonusRows[r]||''; const ch=row.charAt(c)||' '; switch(ch){ case '-': return 'DW'; case '=': return 'TW'; case '"': return 'TL'; case "'": return 'DL'; case '~': return '4W'; case '^': return '4L'; default: return null; } }
       function renderMatchBoard(){
         const cells = matchBoardEl.children;
+        const hasPending = Object.keys(pendingPlacements).length > 0;
         for(let i=0;i<225;i++){
           const tk = matchBoardState[i] || ' ';
           const placed = pendingPlacements[i];
@@ -260,8 +261,8 @@
           const prevB = cells[i].querySelector('.bonus'); if (prevB) prevB.remove();
           const prevS = cells[i].querySelector('.star'); if (prevS) prevS.remove();
           cells[i].classList.remove('tw','dw','tl','dl','center','occ');
-          // add arrow on start cell
-          if (startCell){
+          // add arrow on start cell (typing aid only). Hide once there is any pending placement
+          if (startCell && !hasPending){
             const si = startCell.row*15 + startCell.col;
             if (i === si){
               cells[i].classList.add('start');
@@ -462,8 +463,7 @@
         }
         rackSelIdx.clear();
         rebuildRackCounts();
-        // If no start cell yet, anchor it where the user dropped first.
-        if (!startCell){ startCell = { row: Math.floor(cellIdx/15), col: (cellIdx%15) }; }
+        // Do not move the typing indicator on DnD; it's for keyboard placement only.
         setMatchRackText();
         renderMatchBoard();
       }
@@ -602,21 +602,19 @@
         html += '</tbody></table>';
         div.innerHTML = html;
       }
-      async function submitPlay(){ if(!matchId) return; // build word from contiguous placements along dir
+      async function submitPlay(){ if(!matchId) return; // indicator is for typing only; infer direction from placements
         // ensure any buffered key is flushed before submit
         flushPendingKey();
         // determine start index (first placement cell in line)
         const idxs = Object.keys(pendingPlacements).map(k=>parseInt(k));
         if(!idxs.length) return;
-        // Infer direction if none set by user interaction
-        let dir = placeDir;
-        if (!startCell){
-          const rows = new Set(idxs.map(i=>Math.floor(i/15)));
-          const cols = new Set(idxs.map(i=>i%15));
-          if (rows.size === 1) dir = 'H';
-          else if (cols.size === 1) dir = 'V';
-          else dir = 'H';
-        }
+        // Infer direction from placements only
+        let dir;
+        const rows = new Set(idxs.map(i=>Math.floor(i/15)));
+        const cols = new Set(idxs.map(i=>i%15));
+        if (rows.size === 1) dir = 'H';
+        else if (cols.size === 1) dir = 'V';
+        else dir = 'H';
         // Choose base index at leftmost (H) or topmost (V) among placements
         let base;
         if (dir==='H'){
