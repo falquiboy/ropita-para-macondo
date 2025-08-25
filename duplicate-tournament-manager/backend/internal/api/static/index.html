@@ -32,15 +32,17 @@
       .col { display: flex; flex-direction: column; gap: 0.5rem; }
       /* Rack tiles */
       .rack { display: flex; gap: 4px; align-items: center; }
-      .tile { min-width: 24px; height: 24px; padding: 0 4px; border-radius: 3px; background: #fff; border: 1px solid #bbb; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; cursor: grab; user-select: none; }
+      .tile { position: relative; min-width: 24px; height: 24px; padding: 0 4px; border-radius: 3px; background: #fff; border: 1px solid #bbb; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; cursor: grab; user-select: none; }
       .tile:active { cursor: grabbing; }
       .tile.digraph { min-width: 34px; }
       .tile.blank { color: #555; font-style: italic; }
       .tile.selected { outline: 2px solid #10b981; background: #e6fffa; }
+      .tile .grab { position: absolute; left: -3px; top: -3px; bottom: -3px; width: 8px; cursor: grab; opacity: 0.25; }
+      .tile .grab:hover { opacity: 0.5; }
       /* DnD push-aside visuals for rack */
       .tile.placeholder { visibility: hidden; }
       /* Keep layout space for the dragged source tile to preserve indices */
-      .tile.drag-hide { visibility: hidden; }
+      .tile.drag-hide { opacity: 0; }
       .tile.insert-left { margin-left: 12px; }
       .tile.insert-right { margin-right: 12px; }
 /* DnD hint spacing */
@@ -343,12 +345,32 @@
         for (const ch of rack.children){ if (ch === rackDragPh) break; if (!isPlaceholder(ch)) idx++; }
         return idx;
       }
+      let rackDraggingSourceEl = null;
+      let rackDraggingFrom = -1;
       function renderRack(){
         const el = document.getElementById('matchRack');
         if (!el) return;
         el.innerHTML = '';
         // Enable dropping to rack container (append dragged tile at end)
-        el.ondragover = (ev)=>{ ev.preventDefault(); /* move placeholder to end for clearer space */ if(rackDragPh && el.lastChild !== rackDragPh){ el.appendChild(rackDragPh); } };
+        el.ondragover = (ev)=>{ ev.preventDefault();
+          // If dragging over rack and no placeholder yet, create it at source position and hide source now
+          if (rackDraggingSourceEl && !rackDragPh){
+            try{
+              const src = rackDraggingSourceEl;
+              const rect = src.getBoundingClientRect();
+              rackDragPh = document.createElement('span');
+              rackDragPh.className = 'tile placeholder' + (src.classList.contains('digraph')? ' digraph':'');
+              rackDragPh.style.width = rect.width + 'px';
+              rackDragPh.style.height = rect.height + 'px';
+              src.parentNode.insertBefore(rackDragPh, src);
+              src.classList.add('drag-hide');
+              dbg('rack first over: create placeholder at', rackDraggingFrom);
+            }catch(_){}
+          }
+          // move placeholder to end if hovering the container empty area
+          if(rackDragPh && el.lastChild !== rackDragPh){ el.appendChild(rackDragPh); }
+        };
+        el.ondragenter = (ev)=>{ if (rackDraggingSourceEl) { /* ensure we process dragover */ ev.preventDefault(); } };
         el.ondrop = (ev)=>{
           ev.preventDefault();
           const data = ev.dataTransfer?.getData('text/plain');
@@ -372,15 +394,17 @@
             }
           }catch(_){ /* ignore */ }
           // cleanup placeholder/hints
-          clearRackDnDHints(); if(rackDragPh){ rackDragPh.remove(); rackDragPh=null; }
+           clearRackDnDHints(); if(rackDragPh){ rackDragPh.remove(); rackDragPh=null; } if(rackDraggingSourceEl){ rackDraggingSourceEl.classList.remove('drag-hide'); rackDraggingSourceEl=null; rackDraggingFrom=-1; }
         };
         rackTokensArr.forEach((tk, idx)=>{
           const sp = document.createElement('span');
           const lbl = tokenLabel(tk);
           sp.className = 'tile' + ((lbl.length>1)?' digraph':'') + ((tk==='?')?' blank':'') + (rackSelIdx.has(idx)?' selected':'');
-          sp.textContent = lbl.toUpperCase();
+          const txt = document.createElement('span'); txt.textContent = lbl.toUpperCase(); sp.appendChild(txt);
+          // Reorder handle (custom DnD inside rack only)
+          const grab = document.createElement('span'); grab.className='grab'; sp.appendChild(grab);
           sp.title = 'Click: ' + (startCell? 'colocar':'seleccionar para intercambio');
-          // Drag-and-drop reorder and drag to board
+          // Drag-and-drop to board (keep native)
           sp.setAttribute('draggable', 'true');
           sp.addEventListener('dragstart', (ev)=>{
             draggingKind = 'rack';
@@ -389,59 +413,17 @@
               // Minimal drag image to reduce OS ghost
               const cv=document.createElement('canvas'); cv.width=cv.height=1; ev.dataTransfer?.setDragImage(cv, 0, 0);
             } catch(_){ }
-            // Insert placeholder with same size, hide original tile for push-aside effect
-            if (!rackDragPh){
-              rackDragPh = document.createElement('span');
-              rackDragPh.className = 'tile placeholder' + ((lbl.length>1)?' digraph':'');
-              const rect = sp.getBoundingClientRect();
-              rackDragPh.style.width = rect.width + 'px';
-              rackDragPh.style.height = rect.height + 'px';
-              sp.parentNode.insertBefore(rackDragPh, sp);
-              sp.classList.add('drag-hide');
-            }
+            rackDraggingSourceEl = sp; rackDraggingFrom = idx;
             dbg('rack dragstart', {from: idx});
           });
-          sp.addEventListener('dragend', ()=>{ draggingKind = null; rackJustDraggedAt = Date.now(); if(rackDragPh){ rackDragPh.remove(); rackDragPh=null; } clearRackDnDHints(); sp.classList.remove('drag-hide'); });
-          sp.addEventListener('dragover', (ev)=>{ ev.preventDefault();
-            // Move placeholder before/after this tile based on pointer side
-            if (rackDragPh){
-              const rect=sp.getBoundingClientRect(); const x=(ev.clientX||0)-rect.left; const right=(x>rect.width/2);
-              if (right){
-                if (sp.nextSibling !== rackDragPh) sp.parentNode.insertBefore(rackDragPh, sp.nextSibling);
-              } else {
-                if (sp.previousSibling !== rackDragPh) sp.parentNode.insertBefore(rackDragPh, sp);
-              }
-            }
-            // Visual hint margins
-            const side = (function(){ try{ const rect=sp.getBoundingClientRect(); const x=(ev.clientX||0)-rect.left; return (x>rect.width/2)?'right':'left'; }catch(_){ return 'right'; } })();
-            sp.classList.toggle('insert-left', side==='left');
-            sp.classList.toggle('insert-right', side==='right');
-          });
-          sp.addEventListener('dragleave', ()=>{ sp.classList.remove('insert-left','insert-right'); });
+          sp.addEventListener('dragend', ()=>{ draggingKind = null; rackJustDraggedAt = Date.now(); if(rackDragPh){ rackDragPh.remove(); rackDragPh=null; } clearRackDnDHints(); if (rackDraggingSourceEl){ rackDraggingSourceEl.classList.remove('drag-hide'); } rackDraggingSourceEl=null; rackDraggingFrom=-1; });
           sp.addEventListener('drop', (ev)=>{
             ev.preventDefault(); ev.stopPropagation();
             const data = ev.dataTransfer?.getData('text/plain');
             try{
               const info = JSON.parse(data||'{}');
               if (!info) return;
-              if (info.kind === 'rack' && Number.isInteger(info.idx)){
-                const from = info.idx;
-                // Compute target insert index by counting non-placeholder children before placeholder
-                let insertIndex = computeInsertIndexFromPlaceholder();
-                if (insertIndex < 0){
-                  // Fallback to side of hovered tile
-                  const rect=sp.getBoundingClientRect(); const x=(ev.clientX||0)-rect.left; const side=(x>rect.width/2)?'right':'left';
-                  insertIndex = idx + (side==='right'?1:0);
-                }
-                // Adjust for removal if dragging from before the insertion point
-                if (from < insertIndex) insertIndex -= 1;
-                if (from !== insertIndex && from>=0 && from<rackTokensArr.length){
-                  const [item] = rackTokensArr.splice(from,1);
-                  const insertAt = insertIndex;
-                  rackTokensArr.splice(insertAt, 0, item);
-                  rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText();
-                }
-              } else if (info.kind === 'board' && Number.isInteger(info.idx)){
+              if (info.kind === 'board' && Number.isInteger(info.idx)){
                 // Swap pending tile from board into this rack slot
                 const src = info.idx; const tk = pendingPlacements[src];
                 if (tk){
@@ -468,6 +450,59 @@
             renderRack();
           });
           el.appendChild(sp);
+
+          // Custom reorder on grab handle (pointer-driven, cross-browser)
+          grab.addEventListener('mousedown', (downEv)=>{
+            downEv.preventDefault(); downEv.stopPropagation();
+            const rack = document.getElementById('matchRack'); if(!rack) return;
+            const srcIdx = idx;
+            const srcEl = sp;
+            const rect = srcEl.getBoundingClientRect();
+            // Ghost element following the pointer
+            const ghost = srcEl.cloneNode(true);
+            ghost.style.position='fixed'; ghost.style.pointerEvents='none'; ghost.style.opacity='0.8';
+            ghost.style.left = rect.left+'px'; ghost.style.top=rect.top+'px'; ghost.style.zIndex='9999';
+            document.body.appendChild(ghost);
+            // Placeholder
+            const ph = document.createElement('span'); ph.className='tile placeholder'+(srcEl.classList.contains('digraph')?' digraph':''); ph.style.width=rect.width+'px'; ph.style.height=rect.height+'px';
+            srcEl.parentNode.insertBefore(ph, srcEl); srcEl.classList.add('drag-hide');
+
+            const onMove = (ev)=>{
+              const cx = (ev.clientX!=null? ev.clientX : 0), cy = (ev.clientY!=null? ev.clientY : 0);
+              ghost.style.left = (cx-rect.width/2)+'px'; ghost.style.top=(cy-rect.height/2)+'px';
+              // Compute insert position based on center X relative to rack children midpoints
+              const rackRect = rack.getBoundingClientRect();
+              if (cy < rackRect.top-40 || cy > rackRect.bottom+40) return; // outside vertical range: ignore
+              let insertBefore = null;
+              for (const child of rack.children){
+                if (child === ph || child === srcEl) continue;
+                const cr = child.getBoundingClientRect();
+                const mid = cr.left + cr.width/2;
+                if (cx < mid){ insertBefore = child; break; }
+              }
+              if (insertBefore){
+                if (insertBefore !== ph.nextSibling) rack.insertBefore(ph, insertBefore);
+              } else {
+                if (rack.lastChild !== ph) rack.appendChild(ph);
+              }
+            };
+            const onUp = (ev)=>{
+              document.removeEventListener('mousemove', onMove);
+              document.removeEventListener('mouseup', onUp);
+              ghost.remove(); srcEl.classList.remove('drag-hide'); ph.remove();
+              // Finalize reorder
+              let insertIndex=0; for (const child of rack.children){ if (child === ph) break; if (child !== srcEl) insertIndex++; }
+              // Compute actual index excluding source element current
+              let from = srcIdx; let to = insertIndex; if (from < to) to -= 1;
+              if (from !== to && from>=0 && to>=0 && from < rackTokensArr.length){
+                const [item] = rackTokensArr.splice(from,1);
+                rackTokensArr.splice(Math.min(to, rackTokensArr.length), 0, item);
+                rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText();
+              }
+            };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+          });
         });
       }
       function setMatchRackText(){ renderRack(); }
