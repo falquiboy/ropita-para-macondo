@@ -56,7 +56,7 @@
     <div class="row">
       <button id="matchShuffle">Shuffle Rack</button>
       <button id="matchRecall">Recall (ultimo)</button>
-      <button id="matchRecallAll">Recall (todos)</button>
+      <button id="matchRecallAll" title="Esc: devolver todas las fichas al atril">Recall (todos) (Esc)</button>
       <button id="matchPass">Pasar</button>
       <button id="matchExchange">Intercambiar</button>
       <input id="matchExchangeTiles" type="text" placeholder="Tiles a cambiar (ej: AE)" style="width:12rem"/>
@@ -84,7 +84,7 @@
       <div style="display:flex;flex-direction:column">
         <div class="coords-row" id="matchTopCoords"></div>
         <div class="grid" id="matchBoard"></div>
-        <div style="margin-top:4px;font-size:12px;color:#6b7280">Inicio: <span id="matchCoordLabel">—</span></div>
+        <div style="margin-top:4px;font-size:12px;color:#6b7280" title="Barra espaciadora: cambia dirección de tipeo">Inicio: <span id="matchCoordLabel">—</span></div>
       </div>
     </div>
     <div class="row">
@@ -565,7 +565,7 @@
         const res = await fetch('/matches', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ kwg })});
         const j = await res.json(); matchId = j.id; rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts(); setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}`); initMatchBoard(); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } }
       async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts(); setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; renderMatchBoard(); }
-      async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); if(j && Array.isArray(j.rows)){ renderHistory(j.rows); } } catch(_){} }
+      async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); if(j && Array.isArray(j.rows)){ renderHistoryGrouped(j.rows); } } catch(_){} }
       function renderHistory(rows){
         const div = document.getElementById('matchHistory'); if(!div) return;
         const mapType = (t)=>{
@@ -597,6 +597,43 @@
             `<td style="padding:4px;border-bottom:1px solid #f1f5f9">${coord}</td>`+
             `<td style="padding:4px;border-bottom:1px solid #f1f5f9;text-align:right">${row.score??''}</td>`+
             `<td style="padding:4px;border-bottom:1px solid #f1f5f9;text-align:right">${row.cum??''}</td>`+
+          '</tr>';
+        }
+        html += '</tbody></table>';
+        div.innerHTML = html;
+      }
+      // New grouped renderer: both players in the same row per round, coords per convention with arrow glyph
+      function renderHistoryGrouped(rows){
+        const div = document.getElementById('matchHistory'); if(!div) return;
+        const icon = (d)=> (String(d||'H').toUpperCase()==='V' ? '↓' : '→');
+        const rounds = [];
+        for (const r of (rows||[])){
+          const idx = Math.floor(((r.ply||1)-1)/2);
+          if (!rounds[idx]) rounds[idx] = { n: idx+1, you: null, bot: null };
+          const cell = { word: r.word||'', coord: (r.row>=0 && r.col>=0) ? (coordsStr(r.row, r.col, r.dir) + ' ' + icon(r.dir)) : '', score: r.score||0, type: (r.type||'').toUpperCase(), cum: r.cum||0 };
+          if (r.player === 0) rounds[idx].you = cell; else rounds[idx].bot = cell;
+        }
+        let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">'+
+          '<thead><tr style="background:#f8fafc">'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Ronda</th>'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Tú</th>'+
+          '<th style="text-align:right;padding:4px;border-bottom:1px solid #e5e7eb">Pts</th>'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Coord</th>'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Bot</th>'+
+          '<th style="text-align:right;padding:4px;border-bottom:1px solid #e5e7eb">Pts</th>'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Coord</th>'+
+          '</tr></thead><tbody>';
+        for (const r of rounds){ if(!r) continue; const y=r.you||{}, b=r.bot||{};
+          const yt = y.type==='PASS'?'Pasa': y.type==='EXCH' ? ('Intercambia '+(y.word||'')) : (y.word||'');
+          const bt = b.type==='PASS'?'Pasa': b.type==='EXCH' ? ('Intercambia '+(b.word||'')) : (b.word||'');
+          html += '<tr>'+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${r.n}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${yt}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9;text-align:right\">${y.score||''}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${y.coord||''}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${bt}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9;text-align:right\">${b.score||''}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${b.coord||''}</td>`+
           '</tr>';
         }
         html += '</tbody></table>';
@@ -738,9 +775,10 @@
       function log(obj) { out.textContent = (typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2)) + "\n" + out.textContent; }
 
       function coordsStr(row, col, dir){
-        const r = (row|0) + 1;
-        const c = String.fromCharCode('A'.charCodeAt(0) + (col|0));
-        return dir === 'V' ? (c + r) : (r + c);
+        // Convention: letter first => horizontal (e.g., H4); number first => vertical (e.g., 4H)
+        const num = (col|0) + 1;
+        const letc = String.fromCharCode('A'.charCodeAt(0) + (row|0));
+        return (String(dir||'H').toUpperCase()==='V') ? (String(num) + letc) : (letc + String(num));
       }
 
       function getRowsFromGrid(){
