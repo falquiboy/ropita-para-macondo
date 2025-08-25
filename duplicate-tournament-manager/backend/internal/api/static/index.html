@@ -58,6 +58,7 @@
   </head>
   <body>
     <h1>Duplicate Tournament Manager (MVP)</h1>
+    <div style="font-size:11px;color:#6b7280;margin:-8px 0 8px">UI build: <span id="buildStamp"></span></div>
 
     <h2>Partida vs Bot</h2>
     <div class="row">
@@ -83,6 +84,7 @@
           <option value="random">Aleatorio</option>
         </select>
       </label>
+      <label style="display:flex;align-items:center;gap:4px"><input id="silentDndToggle" type="checkbox"/> Silent DnD</label>
       <button id="matchSubmitPlay" title="Enviar jugada (Enter)">Jugar</button>
       <label style="display:flex;align-items:center;gap:4px"><input id="matchAutoAI" type="checkbox"/> Auto AI</label>
     </div>
@@ -203,7 +205,9 @@
       <span id="klv2Status">KLV2: not loaded</span>
     </div>
 
-    <script>
+      <script>
+      // Build stamp for cache-busting verification
+      try{ document.addEventListener('DOMContentLoaded', ()=>{ const e=document.getElementById('buildStamp'); if(e) e.textContent = new Date().toISOString(); }); }catch(_){ }
       // ===== Partida vs Bot =====
       let matchId = null;
       let matchMode = 'static';
@@ -228,7 +232,7 @@
         matchBoardEl.innerHTML = '';
         matchBoardEl.style.gridTemplateColumns = 'repeat(15, 24px)';
         for (let i=0;i<225;i++){
-          const d=document.createElement('div'); d.className='cell'; d.textContent='';
+          const d=document.createElement('div'); d.className='cell'; d.textContent=''; d.dataset.idx=String(i);
           // Allow dropping tiles from rack onto empty cells
           d.addEventListener('dragover', (ev)=>{ ev.preventDefault(); });
           d.addEventListener('drop', (ev)=>{
@@ -345,6 +349,69 @@
         for (const ch of rack.children){ if (ch === rackDragPh) break; if (!isPlaceholder(ch)) idx++; }
         return idx;
       }
+      // Silent DnD (no HTML5), pointer-driven across rack and board
+      function enableSilentDnd(){
+        try{ localStorage.setItem('silentDnd','1'); }catch(_){ }
+        const rack = getRackEl(); if(!rack) return;
+        for (const [i, child] of Array.from(rack.children).entries()){
+          if (!(child instanceof HTMLElement)) continue;
+          child.setAttribute('draggable','false');
+          child.onmousedown = (e)=> startSilentDrag(e, i, child);
+        }
+      }
+      function disableSilentDnd(){
+        try{ localStorage.setItem('silentDnd','0'); }catch(_){ }
+        const rack = getRackEl(); if(!rack) return;
+        for (const child of Array.from(rack.children)){
+          if (!(child instanceof HTMLElement)) continue;
+          child.onmousedown = null;
+          child.setAttribute('draggable','true');
+        }
+      }
+      function elementBoardCellAt(x,y){ const el = document.elementFromPoint(x,y); if(!el) return null; if (el.classList && el.classList.contains('cell') && matchBoardEl && matchBoardEl.contains(el)) return el; return el?.closest && matchBoardEl && matchBoardEl.contains(el.closest('.cell')) ? el.closest('.cell') : null; }
+      function startSilentDrag(downEv, srcIdx, srcEl){
+        if (downEv.button!==0) return; // only left click
+        downEv.preventDefault(); downEv.stopPropagation();
+        const rack = getRackEl(); if(!rack) return;
+        const rect = srcEl.getBoundingClientRect();
+        // Ghost
+        const ghost = srcEl.cloneNode(true);
+        ghost.style.position='fixed'; ghost.style.pointerEvents='none'; ghost.style.opacity='0.8'; ghost.style.left=rect.left+'px'; ghost.style.top=rect.top+'px'; ghost.style.zIndex='9999';
+        document.body.appendChild(ghost);
+        // Placeholder
+        const ph = document.createElement('span'); ph.className='tile placeholder'+(srcEl.classList.contains('digraph')?' digraph':''); ph.style.width=rect.width+'px'; ph.style.height=rect.height+'px';
+        srcEl.parentNode.insertBefore(ph, srcEl); srcEl.classList.add('drag-hide');
+        const onMove = (ev)=>{
+          const cx = ev.clientX||0, cy = ev.clientY||0; ghost.style.left=(cx-rect.width/2)+'px'; ghost.style.top=(cy-rect.height/2)+'px';
+          const rackRect = rack.getBoundingClientRect();
+          if (cy >= rackRect.top-60 && cy <= rackRect.bottom+60){
+            // move placeholder within rack by midpoints
+            let insertBefore=null; for (const child of rack.children){ if (child===ph||child===srcEl) continue; const cr=child.getBoundingClientRect(); const mid=cr.left+cr.width/2; if (cx<mid){ insertBefore=child; break; } }
+            if (insertBefore){ if(insertBefore!==ph.nextSibling) rack.insertBefore(ph, insertBefore); } else { if(rack.lastChild!==ph) rack.appendChild(ph); }
+          }
+        };
+        const onUp = (ev)=>{
+          document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp);
+          const cx = ev.clientX||0, cy = ev.clientY||0; const cell = elementBoardCellAt(cx,cy);
+          ghost.remove(); srcEl.classList.remove('drag-hide');
+          if (cell){ // drop onto board
+            const idx = parseInt(cell.dataset.idx||'-1',10); if (!Number.isFinite(idx)) { ph.remove(); return; }
+            // place on board using existing helper; guard emptiness done in helper
+            dropRackTokenAtCell(srcIdx, idx);
+            ph.remove(); rackJustDraggedAt=Date.now(); return;
+          }
+          // reorder within rack
+          let insertIndex=0; for (const child of rack.children){ if (child===ph) break; if (child!==srcEl) insertIndex++; }
+          let from = srcIdx; let to = insertIndex; if (from < to) to -= 1;
+          ph.remove();
+          if (from !== to && from>=0 && to>=0 && from < rackTokensArr.length){
+            const [item] = rackTokensArr.splice(from,1); rackTokensArr.splice(Math.min(to, rackTokensArr.length), 0, item);
+            rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText();
+          }
+          rackJustDraggedAt=Date.now();
+        };
+        document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
+      }
       let rackDraggingSourceEl = null;
       let rackDraggingFrom = -1;
       function renderRack(){
@@ -406,7 +473,8 @@
           sp.setAttribute('draggable', 'true');
           sp.addEventListener('dragstart', (ev)=>{
             draggingKind = 'rack';
-            ev.dataTransfer?.setData('text/plain', JSON.stringify({kind:'rack', idx}));
+            try { ev.dataTransfer.effectAllowed = 'move'; } catch(_){ }
+            try { ev.dataTransfer?.setData('text/plain', JSON.stringify({kind:'rack', idx})); } catch(_){ }
             try {
               // Minimal drag image to reduce OS ghost
               const cv=document.createElement('canvas'); cv.width=cv.height=1; ev.dataTransfer?.setDragImage(cv, 0, 0);
@@ -415,6 +483,8 @@
             dbg('rack dragstart', {from: idx});
           });
           sp.addEventListener('dragend', ()=>{ draggingKind = null; rackJustDraggedAt = Date.now(); if(rackDragPh){ rackDragPh.remove(); rackDragPh=null; } clearRackDnDHints(); if (rackDraggingSourceEl){ rackDraggingSourceEl.classList.remove('drag-hide'); } rackDraggingSourceEl=null; rackDraggingFrom=-1; });
+          // Allow drop onto this tile (reorder)
+          sp.addEventListener('dragover', (ev)=>{ ev.preventDefault(); });
           sp.addEventListener('drop', (ev)=>{
             ev.preventDefault(); ev.stopPropagation();
             const data = ev.dataTransfer?.getData('text/plain');
@@ -799,6 +869,12 @@
           // cargar preferencia guardada
           try{ const saved = localStorage.getItem('rackOrder'); if(saved){ ordSel.value=saved; applyRackOrder(saved); } }catch(_){ }
           ordSel.onchange = ()=>{ const v=ordSel.value||'none'; try{ localStorage.setItem('rackOrder', v); }catch(_){ } applyRackOrder(v); };
+        }
+        // Silent DnD toggle (no browser ghost)
+        const sdn = document.getElementById('silentDndToggle');
+        if (sdn){ try{ sdn.checked = (localStorage.getItem('silentDnd')==='1'); }catch(_){ }
+          sdn.onchange = ()=>{ if (sdn.checked) enableSilentDnd(); else disableSilentDnd(); };
+          if (sdn.checked) enableSilentDnd();
         }
         // Submit with Enter: if focused on exchange input, do exchange; otherwise submit play
         document.addEventListener('keydown', (e)=>{
