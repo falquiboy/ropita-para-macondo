@@ -36,6 +36,10 @@
       .tile.digraph { min-width: 34px; }
       .tile.blank { color: #555; font-style: italic; }
       .tile.selected { outline: 2px solid #10b981; background: #e6fffa; }
+      /* DnD visual polish for rack */
+      .rack { position: relative; }
+      .tile.dragging { opacity: 0.65; transform: scale(1.05); z-index: 2; }
+      .tile.drag-over { transform: translateX(12px); background: rgba(59,130,246,0.15); }
       /* Coordinates (ES: filas letras, columnas números) */
       .coords-row { display: grid; grid-template-columns: repeat(15, var(--cell-size)); gap: var(--gap); height: var(--header-h); margin-top: 0.25rem; }
       .coords-col { display: grid; grid-template-rows: repeat(15, var(--cell-size)); gap: var(--gap); margin-right: 4px; }
@@ -208,6 +212,7 @@
       let pendingKeyTimer = null;
       let matchBonusRows = null; // 15 strings from server with bonus codes
       let draggingKind = null; // 'rack' | 'board' | null
+      let rackDragFrom = -1;
 
       function initMatchBoard() {
         if (!matchBoardEl) matchBoardEl = document.getElementById('matchBoard');
@@ -358,9 +363,13 @@
             try { ev.dataTransfer.effectAllowed = 'move'; } catch(_){ }
             try { ev.dataTransfer?.setData('text/plain', JSON.stringify({kind:'rack', idx})); } catch(_){ }
             try { const cv=document.createElement('canvas'); cv.width=cv.height=1; ev.dataTransfer?.setDragImage(cv, 0, 0); } catch(_){ }
+            rackDragFrom = idx;
+            sp.classList.add('dragging');
           });
-          sp.addEventListener('dragend', ()=>{ draggingKind = null; });
+          sp.addEventListener('dragend', ()=>{ draggingKind = null; rackDragFrom = -1; sp.classList.remove('dragging'); const tiles = el.querySelectorAll('.tile.drag-over'); tiles.forEach(t=>t.classList.remove('drag-over')); });
           sp.addEventListener('dragover', (ev)=>{ ev.preventDefault(); });
+          sp.addEventListener('dragenter', ()=>{ if (draggingKind==='rack' && rackDragFrom !== idx) sp.classList.add('drag-over'); });
+          sp.addEventListener('dragleave', ()=>{ sp.classList.remove('drag-over'); });
           sp.addEventListener('drop', (ev)=>{
             ev.preventDefault(); ev.stopPropagation();
             const data = ev.dataTransfer?.getData('text/plain');
@@ -386,6 +395,7 @@
                 }
               }
             }catch(_){ /* ignore */ }
+            sp.classList.remove('drag-over');
           });
           sp.addEventListener('click', (ev)=>{
             if (draggingKind) { ev.preventDefault(); return; }
