@@ -32,11 +32,15 @@
       .col { display: flex; flex-direction: column; gap: 0.5rem; }
       /* Rack tiles */
       .rack { display: flex; gap: 4px; align-items: center; }
-      .tile { width: 26px; height: 26px; padding: 0 2px; border-radius: 3px; background: #fff; border: 1px solid #bbb; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; cursor: pointer; user-select: none; position: relative; font-size: 12px; }
+      .tile { width: 26px; height: 26px; padding: 0 2px; border-radius: 3px; background: #fff; border: 1px solid #bbb; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; cursor: pointer; user-select: none; position: relative; font-size: 15px; }
       .tile.digraph { width: 26px; }
       .tile.blank { color: #555; font-style: italic; }
       .tile.selected { outline: 2px solid #10b981; background: #e6fffa; }
-      .tile .val { position: absolute; right: 2px; bottom: 1px; font-size: 9px; opacity: 0.85; font-weight: 600; }
+      .tile .val { position: absolute; right: 2px; bottom: 1px; font-size: 8px; opacity: 0.85; font-weight: 600; line-height: 1; }
+      /* On-board tile face styling */
+      .cell .tile-face { width: 100%; height: 100%; background: #fff; border: 1px solid #bbb; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-weight: 700; position: relative; font-size: 15px; }
+      .cell .tile-face.blank { background: #f3f4f6; color: #555; font-style: italic; }
+      .cell .tile-face .val { position: absolute; right: 2px; bottom: 1px; font-size: 8px; opacity: 0.85; font-weight: 600; line-height: 1; }
       /* DnD visual polish for rack */
       .rack { position: relative; }
       .tile.dragging { opacity: 0.65; transform: scale(1.05); z-index: 2; }
@@ -257,8 +261,8 @@
         for(let i=0;i<225;i++){
           const tk = matchBoardState[i] || ' ';
           const placed = pendingPlacements[i];
-          // reset main text
-          cells[i].textContent = (placed || (tk && tk.trim() ? tk : ''));
+          // reset content
+          cells[i].textContent = '';
           // Make newly placed tiles draggable; fixed tiles are not draggable
           if (placed){
             cells[i].draggable = true;
@@ -385,6 +389,8 @@
           const lbl = tokenLabel(tk);
           sp.className = 'tile' + ((lbl.length>1)?' digraph':'') + ((tk==='?')?' blank':'') + (rackSelIdx.has(idx)?' selected':'');
           sp.textContent = lbl.toUpperCase();
+          const val = nominalValueFor(tk);
+          if (val!=null && tk!=='?') { const vs=document.createElement('span'); vs.className='val'; vs.textContent=String(val); sp.appendChild(vs); }
           sp.title = 'Click: ' + (startCell? 'colocar':'seleccionar para intercambio');
           // Drag-and-drop reorder and drag to board
           sp.setAttribute('draggable', 'true');
@@ -664,38 +670,41 @@
         html += '</tbody></table>';
         div.innerHTML = html;
       }
-      // New grouped renderer: both players in the same row per round, coords per convention with arrow glyph
+      // Grouped renderer: both players in same row; per player show Coord, Word, Pts, Cum
       function renderHistoryGrouped(rows){
         const div = document.getElementById('matchHistory'); if(!div) return;
-        const icon = (d)=> (String(d||'H').toUpperCase()==='V' ? '↓' : '→');
         const rounds = [];
         for (const r of (rows||[])){
           const idx = Math.floor(((r.ply||1)-1)/2);
           if (!rounds[idx]) rounds[idx] = { n: idx+1, you: null, bot: null };
-          const cell = { word: r.word||'', coord: (r.row>=0 && r.col>=0) ? (coordsStr(r.row, r.col, r.dir) + ' ' + icon(r.dir)) : '', score: r.score||0, type: (r.type||'').toUpperCase(), cum: r.cum||0 };
+          const cell = { word: r.word||'', coord: (r.row>=0 && r.col>=0) ? coordsStr(r.row, r.col, r.dir) : '', score: r.score||0, type: (r.type||'').toUpperCase(), cum: r.cum||0 };
           if (r.player === 0) rounds[idx].you = cell; else rounds[idx].bot = cell;
         }
         let html = '<table style="width:100%;border-collapse:collapse;font-size:12px">'+
           '<thead><tr style="background:#f8fafc">'+
           '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Ronda</th>'+
-          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Tú</th>'+
-          '<th style="text-align:right;padding:4px;border-bottom:1px solid #e5e7eb">Pts</th>'+
-          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Coord</th>'+
-          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Bot</th>'+
-          '<th style="text-align:right;padding:4px;border-bottom:1px solid #e5e7eb">Pts</th>'+
-          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Coord</th>'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Coord (Tú)</th>'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Palabra (Tú)</th>'+
+          '<th style="text-align:right;padding:4px;border-bottom:1px solid #e5e7eb">Pts (Tú)</th>'+
+          '<th style="text-align:right;padding:4px;border-bottom:1px solid #e5e7eb">Acum (Tú)</th>'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Coord (Bot)</th>'+
+          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Palabra (Bot)</th>'+
+          '<th style="text-align:right;padding:4px;border-bottom:1px solid #e5e7eb">Pts (Bot)</th>'+
+          '<th style="text-align:right;padding:4px;border-bottom:1px solid #e5e7eb">Acum (Bot)</th>'+
           '</tr></thead><tbody>';
         for (const r of rounds){ if(!r) continue; const y=r.you||{}, b=r.bot||{};
           const yt = y.type==='PASS'?'Pasa': y.type==='EXCH' ? ('Intercambia '+(y.word||'')) : (y.word||'');
           const bt = b.type==='PASS'?'Pasa': b.type==='EXCH' ? ('Intercambia '+(b.word||'')) : (b.word||'');
           html += '<tr>'+
             `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${r.n}</td>`+
-            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${yt}</td>`+
-            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9;text-align:right\">${y.score||''}</td>`+
             `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${y.coord||''}</td>`+
-            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${bt}</td>`+
-            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9;text-align:right\">${b.score||''}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${yt}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9;text-align:right\">${(y.score!=null?y.score:'')}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9;text-align:right\">${(y.cum!=null?y.cum:'')}</td>`+
             `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${b.coord||''}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${bt}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9;text-align:right\">${(b.score!=null?b.score:'')}</td>`+
+            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9;text-align:right\">${(b.cum!=null?b.cum:'')}</td>`+
           '</tr>';
         }
         html += '</tbody></table>';
