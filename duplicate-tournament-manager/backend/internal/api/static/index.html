@@ -53,8 +53,9 @@
       .coord.col { height: var(--cell-size); transform: translateY(var(--row-label-nudge)); }
       .coords-spacer { height: var(--header-h); }
       /* Tiles mapping grid */
-      .tiles-grid { margin-top: 6px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
-      .tile-card { display:flex; align-items:center; gap:8px; padding:6px 8px; border:1px solid #e5e7eb; border-radius:6px; background:#fff; min-height: 40px; }
+      .tiles-grid { margin-top: 6px; display: flex; flex-direction: column; gap: 8px; }
+      .tiles-row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(56px, auto); gap: 8px; align-items: center; }
+      .tile-card { display:flex; align-items:center; gap:8px; padding:6px 8px; border:1px solid #e5e7eb; border-radius:6px; background:#fff; min-height: 40px; justify-content: center; }
       .tile-card.dim { opacity: .35; }
       .tile-card .sample { display:inline-flex; align-items:center; justify-content:center; position:relative; width:26px; height:26px; border:1px solid #bbb; border-radius:3px; background:#fff; font-weight:700; font-size:15px; }
       .tile-card .sample .val { position:absolute; right:2px; bottom:1px; font-size:8px; font-weight:600; opacity:.85; line-height:1; }
@@ -415,38 +416,38 @@
         for (const k in init){ unseen[k] = Math.max(0, init[k] - (used[k]||0) - (mine[k]||0)); }
         return unseen;
       }
-      function orderedTokensForMap(){
-        // Group order per spec
-        const groups = [
+      function orderedGroupsForMap(){
+        // 6 groups, in order; include V between F and Y as requested
+        return [
           ['?'],
           ['Q','B','G','L'],
           ['A','E','O','I','U'],
           ['J','Z','X','Ñ','LL','RR'],
-          ['CH','H','F','Y'],
+          ['CH','H','F','V','Y'],
           ['S','R','N','T','C','D','M','P']
         ];
-        // Flatten preserving order
-        const out = [];
-        for (const g of groups){ for (const x of g) out.push(x); }
-        return out;
       }
       function renderTilesMap(boardRows, myRack){
         const root = document.getElementById('tilesMap'); if(!root) return;
         const unseen = computeUnseen(boardRows, myRack);
         root.innerHTML='';
-        const order = orderedTokensForMap();
-        for (const key of order){
-          const count = unseen[key]||0;
-          const tk = (key.length>1? ('['+key+']') : key);
-          const card = document.createElement('div'); card.className='tile-card' + (count===0? ' dim':'');
-          const sample = document.createElement('div'); sample.className='sample';
-          const lbl = tokenLabel(tk).toUpperCase();
-          sample.textContent = lbl;
-          const val = nominalValueFor(tk);
-          if (val!=null && tk!=='?'){ const vs=document.createElement('span'); vs.className='val'; vs.textContent=String(val); sample.appendChild(vs); }
-          const countEl = document.createElement('div'); countEl.className='count'; countEl.textContent = 'x' + String(count);
-          card.appendChild(sample); card.appendChild(countEl);
-          root.appendChild(card);
+        const groups = orderedGroupsForMap();
+        for (const grp of groups){
+          const row = document.createElement('div'); row.className='tiles-row';
+          for (const key of grp){
+            const count = unseen[key]||0;
+            const tk = (key.length>1? ('['+key+']') : key);
+            const card = document.createElement('div'); card.className='tile-card' + (count===0? ' dim':'');
+            const sample = document.createElement('div'); sample.className='sample';
+            const lbl = tokenLabel(tk).toUpperCase();
+            sample.textContent = lbl;
+            const val = nominalValueFor(tk);
+            if (val!=null && tk!=='?'){ const vs=document.createElement('span'); vs.className='val'; vs.textContent=String(val); sample.appendChild(vs); }
+            const countEl = document.createElement('div'); countEl.className='count'; countEl.textContent = 'x' + String(count);
+            card.appendChild(sample); card.appendChild(countEl);
+            row.appendChild(card);
+          }
+          root.appendChild(row);
         }
       }
       function renderTilesMap(){
