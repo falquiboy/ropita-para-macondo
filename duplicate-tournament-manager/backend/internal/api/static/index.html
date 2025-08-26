@@ -25,7 +25,10 @@
       .cell.dl { background: #cffafe; }
       .cell.center .star { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #f59e0b; font-size: 14px; opacity: 0.9; }
       /* Occupied cell highlight (cream background) */
-      .cell.occ { background: #fff4d6; }
+      .cell.occ { background: #fff4d6; border-color: #8b5a2b; }
+      /* Board tile letter + value (subscript) */
+      .cell .board-letter { font-weight: 800; }
+      .cell .board-val { position: absolute; right: 2px; bottom: 1px; font-size: 8px; font-weight: 700; line-height: 1; }
       pre { background: #111; color: #0f0; padding: 0.5rem; max-height: 240px; overflow: auto; }
       input[type="text"] { padding: 0.25rem 0.5rem; }
       button { padding: 0.4rem 0.8rem; }
@@ -258,8 +261,8 @@
         for(let i=0;i<225;i++){
           const tk = matchBoardState[i] || ' ';
           const placed = pendingPlacements[i];
-          // reset main text
-          cells[i].textContent = (placed || (tk && tk.trim() ? tk : ''));
+          // reset content
+          cells[i].textContent = '';
           // Make newly placed tiles draggable; fixed tiles are not draggable
           if (placed){
             cells[i].draggable = true;
@@ -308,8 +311,18 @@
               }
             }
           } else {
-            // Occupied cell: add cream background; show plain text only
+            // Occupied cell: add cream background; show bold letter + numeric subscript
             cells[i].classList.add('occ');
+            const show = placed || tk;
+            if (show && show.trim()){
+              const letter = document.createElement('span');
+              letter.className = 'board-letter';
+              letter.textContent = tokenLabel(show).toUpperCase();
+              cells[i].appendChild(letter);
+              const isBlank = isPlacedBlankToken(show) || show==='?';
+              const val = nominalValueFor(show);
+              if (!isBlank && val!=null){ const vs=document.createElement('span'); vs.className='board-val'; vs.textContent=String(val); cells[i].appendChild(vs); }
+            }
           }
         }
         // Update coordinate label for current start
