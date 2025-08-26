@@ -32,10 +32,11 @@
       .col { display: flex; flex-direction: column; gap: 0.5rem; }
       /* Rack tiles */
       .rack { display: flex; gap: 4px; align-items: center; }
-      .tile { min-width: 24px; height: 24px; padding: 0 4px; border-radius: 3px; background: #fff; border: 1px solid #bbb; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; cursor: pointer; user-select: none; }
-      .tile.digraph { min-width: 34px; }
+      .tile { width: 26px; height: 26px; padding: 0 2px; border-radius: 3px; background: #fff; border: 1px solid #bbb; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; cursor: pointer; user-select: none; position: relative; font-size: 12px; }
+      .tile.digraph { width: 26px; }
       .tile.blank { color: #555; font-style: italic; }
       .tile.selected { outline: 2px solid #10b981; background: #e6fffa; }
+      .tile .val { position: absolute; right: 2px; bottom: 1px; font-size: 9px; opacity: 0.85; font-weight: 600; }
       /* DnD visual polish for rack */
       .rack { position: relative; }
       .tile.dragging { opacity: 0.65; transform: scale(1.05); z-index: 2; }
@@ -63,7 +64,7 @@
       <button id="matchRecallAll" title="Esc: devolver todas las fichas al atril">Recall (todos) (Esc)</button>
       <button id="matchPass">Pasar</button>
       <button id="matchExchange">Intercambiar</button>
-      <input id="matchExchangeTiles" type="text" placeholder="Tiles a cambiar (ej: AE)" style="width:12rem"/>
+      <input id="matchExchangeTiles" type="text" placeholder="Tiles a cambiar (ej: AE)" style="width:12rem; text-transform: uppercase"/>
       <button id="matchAIMove">AI mueve</button>
       <select id="matchAIMode"><option value="static">Hasty</option><option value="sim">Sim</option></select>
       <label>Orden rack
@@ -300,11 +301,26 @@
               else if (tag==='DW') cells[i].classList.add('dw');
               else if (tag==='TL') cells[i].classList.add('tl');
               else if (tag==='DL') cells[i].classList.add('dl');
-              const b = document.createElement('span'); b.className='bonus'; b.textContent = tag; cells[i].appendChild(b);
+              // Do not show text label on center; color is enough
+              if (!(r===7 && c===7)){
+                const b = document.createElement('span'); b.className='bonus'; b.textContent = tag; cells[i].appendChild(b);
+              }
             }
           } else {
             // Occupied cell: add cream background
             cells[i].classList.add('occ');
+            // Render tile face with value
+            const show = placed || tk;
+            if (show && show.trim()){
+              const face = document.createElement('div'); face.className='tile-face';
+              const isBlank = isPlacedBlankToken(show) || show==='?';
+              if (isBlank) face.classList.add('blank');
+              const label = tokenLabel(show).toUpperCase();
+              face.textContent = label;
+              const val = nominalValueFor(show);
+              if (!isBlank && val!=null){ const vs=document.createElement('span'); vs.className='val'; vs.textContent=String(val); face.appendChild(vs); }
+              cells[i].appendChild(face);
+            }
           }
         }
         // Update coordinate label for current start
@@ -320,6 +336,20 @@
         if (tk === '?') return '?';
         if (tk.startsWith('[') && tk.endsWith(']')) return tk.slice(1,-1); // CH/LL/RR or lowercase on blank
         return tk;
+      }
+      function tokenKeyForValue(tk){
+        if (!tk) return '';
+        if (tk === '?') return '?';
+        if (tk.startsWith('[') && tk.endsWith(']')) return tk.slice(1,-1).toUpperCase();
+        return String(tk).toUpperCase();
+      }
+      function nominalValueFor(token){
+        const k = tokenKeyForValue(token);
+        const map = {
+          'A':1,'B':3,'C':3,'D':2,'E':1,'F':4,'G':2,'H':4,'I':1,'J':8,'L':1,'M':3,'N':1,'Ñ':8,'O':1,'P':3,'Q':5,'R':1,'S':1,'T':1,'U':1,'V':4,'X':8,'Y':4,'Z':10,
+          'CH':5,'LL':8,'RR':8
+        };
+        return map[k] || null;
       }
       function renderRack(){
         const el = document.getElementById('matchRack');
@@ -718,8 +748,10 @@
       async function doExchange(){
         if(!matchId) return;
         const inp = document.getElementById('matchExchangeTiles');
-        const tiles = (inp?.value || '').trim();
+        let tiles = (inp?.value || '').trim();
         if(!tiles) return;
+        tiles = normalizeExchangeTiles(tiles);
+        if (inp) inp.value = tiles; // reflect
         const res = await fetch(`/matches/${matchId}/exchange`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({tiles})});
         const j = await res.json();
         if(j.error){ alert(j.error); return; }
@@ -729,6 +761,18 @@
         await refreshMatch(); await refreshHistory();
         // Auto AI move if enabled
         if (document.getElementById('matchAutoAI')?.checked){ await doAIMove(); }
+      }
+      function normalizeExchangeTiles(raw){
+        let s = String(raw||'').toUpperCase().replace(/\s+/g,'');
+        let out = '';
+        for (let i=0; i<s.length; i++){
+          const ch = s[i];
+          if (ch === '['){ const j = s.indexOf(']', i+1); if (j>i){ out += s.slice(i,j+1).toUpperCase(); i=j; continue; } }
+          const dig2 = s.slice(i,i+2);
+          if (dig2==='CH' || dig2==='LL' || dig2==='RR'){ out += '['+dig2+']'; i+=1; continue; }
+          out += ch;
+        }
+        return out;
       }
       async function doAIMove(){ if(!matchId) return; const mode = aiMode(); const payload = (mode==='sim')? {mode, sim:{iters:300, plies:2, topK:15}} : {mode:'static'}; const r = await fetch(`/matches/${matchId}/ai_move`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)}); const j = await r.json(); if(j.error){ alert(j.error); return; } await refreshMatch(); await refreshHistory(); }
       // Buttons wiring
@@ -763,6 +807,9 @@
           const isEditing = (ae && ((ae.tagName === 'INPUT') || (ae.tagName === 'TEXTAREA') || (ae.tagName === 'SELECT') || ae.isContentEditable));
           if (!isEditing) { submitPlay(); e.preventDefault(); }
         });
+        // Force uppercase in exchange input while typing
+        const ex = document.getElementById('matchExchangeTiles');
+        if (ex){ ex.addEventListener('input', ()=>{ const p=ex.selectionStart; ex.value = ex.value.toUpperCase(); try{ ex.setSelectionRange(p,p);}catch(_){} }); }
       });
       const $ = sel => document.querySelector(sel);
       const out = $('#out');
