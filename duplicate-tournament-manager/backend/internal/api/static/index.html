@@ -52,6 +52,13 @@
       .coord { width: var(--cell-size); height: var(--header-h); font-size: 11px; color: #6b7280; display: flex; align-items: center; justify-content: center; user-select: none; }
       .coord.col { height: var(--cell-size); transform: translateY(var(--row-label-nudge)); }
       .coords-spacer { height: var(--header-h); }
+      /* Tiles mapping grid */
+      #tilesMap { margin-top: 6px; display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+      .tile-card { display:flex; align-items:center; gap:8px; padding:6px 8px; border:1px solid #e5e7eb; border-radius:6px; background:#fff; }
+      .tile-card .sample { display:inline-flex; align-items:center; justify-content:center; position:relative; width:26px; height:26px; border:1px solid #bbb; border-radius:3px; background:#fff; font-weight:700; font-size:15px; }
+      .tile-card .sample .val { position:absolute; right:2px; bottom:1px; font-size:8px; font-weight:600; opacity:.85; line-height:1; }
+      .tile-card .label { font-weight:600; font-size:12px; }
+      .tile-card .meta { font-size:11px; color:#6b7280; }
     </style>
   </head>
   <body>
@@ -200,6 +207,12 @@
       <button id="loadKLV2">Load KLV2</button>
       <span id="klv2Status">KLV2: not loaded</span>
     </div>
+
+    <h3>Tiles Mapping</h3>
+    <div class="row" style="align-items:flex-start">
+      <button id="toggleTilesMap">Show/Hide</button>
+    </div>
+    <div id="tilesMap" style="display:none"></div>
 
     <script>
       // ===== Partida vs Bot =====
@@ -355,6 +368,25 @@
           'CH':5,'LL':8,'RR':8
         };
         return map[k] || null;
+      }
+      function renderTilesMap(){
+        const root = document.getElementById('tilesMap'); if(!root) return;
+        root.innerHTML = '';
+        const tokens = ['?','A','B','C','[CH]','D','E','F','G','H','I','J','L','[LL]','M','N','Ñ','O','P','Q','R','[RR]','S','T','U','V','X','Y','Z'];
+        for (const tk of tokens){
+          const card = document.createElement('div'); card.className='tile-card';
+          const sample = document.createElement('div'); sample.className='sample';
+          const lbl = tokenLabel(tk).toUpperCase();
+          sample.textContent = lbl;
+          const val = nominalValueFor(tk);
+          if (val!=null && tk!=='?'){ const vs=document.createElement('span'); vs.className='val'; vs.textContent=String(val); sample.appendChild(vs); }
+          const text = document.createElement('div');
+          const title = document.createElement('div'); title.className='label'; title.textContent = lbl + (tk.startsWith('[')? ' (digraph)':'');
+          const meta = document.createElement('div'); meta.className='meta'; meta.textContent = (val!=null? (val+ ' pts') : 'comodín');
+          text.appendChild(title); text.appendChild(meta);
+          card.appendChild(sample); card.appendChild(text);
+          root.appendChild(card);
+        }
       }
       function renderRack(){
         const el = document.getElementById('matchRack');
@@ -797,6 +829,7 @@
         document.getElementById('matchAIMove').onclick=doAIMove;
         document.getElementById('matchHistoryRefresh').onclick=refreshHistory;
         document.getElementById('matchSubmitPlay').onclick=submitPlay;
+        const tbtn = document.getElementById('toggleTilesMap'); if (tbtn){ tbtn.onclick = ()=>{ const el=document.getElementById('tilesMap'); if(!el) return; const show = (el.style.display==='none'); el.style.display = show? 'grid':'none'; if (show) renderTilesMap(); }; }
         // Rack order change
         const ordSel = document.getElementById('matchRackOrder');
         if (ordSel){
