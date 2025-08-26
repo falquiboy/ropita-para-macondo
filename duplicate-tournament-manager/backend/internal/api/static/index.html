@@ -27,7 +27,8 @@
       /* Occupied cell highlight (cream background) */
       .cell.occ { background: #fff4d6; border-color: #d2b48c; }
       /* Board tile letter + value (subscript) */
-      .cell .board-letter { font-weight: 400; font-size: calc(var(--cell-size) * 0.68); line-height: 1; transform: translateX(-2px); }
+      .cell .board-letter { font-weight: 600; font-size: calc(var(--cell-size) * 0.64); line-height: 1; transform: translateX(-2px); }
+      .cell .board-letter.digraph { font-size: calc(var(--cell-size) * 0.56); }
       .cell .board-val { position: absolute; right: 2px; bottom: 1px; font-size: calc(var(--cell-size) * 0.30); font-weight: 700; line-height: 1; }
       pre { background: #111; color: #0f0; padding: 0.5rem; max-height: 240px; overflow: auto; }
       input[type="text"] { padding: 0.25rem 0.5rem; }
@@ -317,7 +318,9 @@
             if (show && show.trim()){
               const letter = document.createElement('span');
               letter.className = 'board-letter';
-              letter.textContent = tokenLabel(show).toUpperCase();
+              const label = tokenLabel(show).toUpperCase();
+              letter.textContent = label;
+              if (label.length > 1) letter.classList.add('digraph');
               cells[i].appendChild(letter);
               const isBlank = isPlacedBlankToken(show) || show==='?';
               const val = nominalValueFor(show);
