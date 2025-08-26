@@ -53,6 +53,13 @@
       .coord.col { height: var(--cell-size); transform: translateY(var(--row-label-nudge)); }
       .coords-spacer { height: var(--header-h); }
       /* Tiles mapping grid */
+      .tiles-grid { margin-top: 6px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+      .tile-card { display:flex; align-items:center; gap:8px; padding:6px 8px; border:1px solid #e5e7eb; border-radius:6px; background:#fff; min-height: 40px; }
+      .tile-card.dim { opacity: .35; }
+      .tile-card .sample { display:inline-flex; align-items:center; justify-content:center; position:relative; width:26px; height:26px; border:1px solid #bbb; border-radius:3px; background:#fff; font-weight:700; font-size:15px; }
+      .tile-card .sample .val { position:absolute; right:2px; bottom:1px; font-size:8px; font-weight:600; opacity:.85; line-height:1; }
+      .tile-card .count { font-size:12px; color:#111; font-weight:600; }
+      /* Tiles mapping grid */
       #tilesMap { margin-top: 6px; display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
       .tile-card { display:flex; align-items:center; gap:8px; padding:6px 8px; border:1px solid #e5e7eb; border-radius:6px; background:#fff; }
       .tile-card .sample { display:inline-flex; align-items:center; justify-content:center; position:relative; width:26px; height:26px; border:1px solid #bbb; border-radius:3px; background:#fff; font-weight:700; font-size:15px; }
@@ -102,8 +109,8 @@
         </select>
       </label>
     </div>
-    <div class="row">
-      <div style="display:flex;flex-direction:column;margin-right:1px">
+    <div class="row" style="align-items:flex-start">
+      <div style="display:flex;flex-direction:column;margin-right:8px">
         <div class="coords-spacer"></div>
         <div class="coords-col" id="matchLeftCoords"></div>
       </div>
@@ -111,6 +118,10 @@
         <div class="coords-row" id="matchTopCoords"></div>
         <div class="grid" id="matchBoard"></div>
         <div style="margin-top:4px;font-size:12px;color:#6b7280" title="Barra espaciadora: cambia dirección de tipeo">Inicio: <span id="matchCoordLabel">—</span></div>
+      </div>
+      <div id="tilesSidebar" style="margin-left:12px; min-width: 360px; flex: 1;">
+        <h3 style="margin:6px 0 4px">Tiles Mapping</h3>
+        <div id="tilesMap" class="tiles-grid"></div>
       </div>
     </div>
     <div class="row">
@@ -368,6 +379,75 @@
           'CH':5,'LL':8,'RR':8
         };
         return map[k] || null;
+      }
+      // Initial tile distribution for Spanish (approximate OSPS, including digraph tiles)
+      function initialCounts(){
+        // These can be adjusted to match the exact ruleset in use
+        return {
+          '?': 2,
+          'A': 12, 'B': 2, 'C': 4, 'D': 5, 'E': 12, 'F': 1, 'G': 2, 'H': 2, 'I': 6, 'J': 1,
+          'L': 4, 'LL': 1, 'M': 2, 'N': 5, 'Ñ': 1, 'O': 9, 'P': 2, 'Q': 1, 'R': 5, 'RR': 1,
+          'S': 6, 'T': 4, 'U': 5, 'V': 1, 'X': 1, 'Y': 1, 'Z': 1, 'CH': 1
+        };
+      }
+      function tokenFromLabel(label){
+        // Convert display label back to canonical key (e.g., CH->CH, Ñ->Ñ)
+        return label;
+      }
+      function countTokensInRows(rows){
+        const cnt = {};
+        for (const row of (rows||[])){
+          const toks = tokensFromBracketStr(row||'');
+          for (const tk of toks){ if (!tk || tk===' ') continue; const key = tokenKeyForValue(tk); cnt[key] = (cnt[key]||0)+1; }
+        }
+        return cnt;
+      }
+      function countTokensInRack(rackStr){
+        const cnt = {}; const toks = tokensFromBracketStr(rackStr||'');
+        for (const tk of toks){ if (!tk || tk===' ') continue; const key = tokenKeyForValue(tk); cnt[key] = (cnt[key]||0)+1; }
+        return cnt;
+      }
+      function computeUnseen(boardRows, myRack){
+        const init = initialCounts();
+        const used = countTokensInRows(boardRows);
+        const mine = countTokensInRack(myRack);
+        const unseen = {};
+        for (const k in init){ unseen[k] = Math.max(0, init[k] - (used[k]||0) - (mine[k]||0)); }
+        return unseen;
+      }
+      function orderedTokensForMap(){
+        // Group order per spec
+        const groups = [
+          ['?'],
+          ['Q','B','G','L'],
+          ['A','E','O','I','U'],
+          ['J','Z','X','Ñ','LL','RR'],
+          ['CH','H','F','Y'],
+          ['S','R','N','T','C','D','M','P']
+        ];
+        // Flatten preserving order
+        const out = [];
+        for (const g of groups){ for (const x of g) out.push(x); }
+        return out;
+      }
+      function renderTilesMap(boardRows, myRack){
+        const root = document.getElementById('tilesMap'); if(!root) return;
+        const unseen = computeUnseen(boardRows, myRack);
+        root.innerHTML='';
+        const order = orderedTokensForMap();
+        for (const key of order){
+          const count = unseen[key]||0;
+          const tk = (key.length>1? ('['+key+']') : key);
+          const card = document.createElement('div'); card.className='tile-card' + (count===0? ' dim':'');
+          const sample = document.createElement('div'); sample.className='sample';
+          const lbl = tokenLabel(tk).toUpperCase();
+          sample.textContent = lbl;
+          const val = nominalValueFor(tk);
+          if (val!=null && tk!=='?'){ const vs=document.createElement('span'); vs.className='val'; vs.textContent=String(val); sample.appendChild(vs); }
+          const countEl = document.createElement('div'); countEl.className='count'; countEl.textContent = 'x' + String(count);
+          card.appendChild(sample); card.appendChild(countEl);
+          root.appendChild(card);
+        }
       }
       function renderTilesMap(){
         const root = document.getElementById('tilesMap'); if(!root) return;
@@ -665,7 +745,10 @@
       async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts();
         // Reaplicar orden persistente del rack en cada surtido
         try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
-        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; startCell=null; placeDir='H'; renderMatchBoard(); }
+        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; startCell=null; placeDir='H'; renderMatchBoard();
+        // Render tiles mapping with unseen counts (bag + opponent by inference)
+        try{ renderTilesMap(j.board_rows||[], j.rack||''); }catch(_){ }
+      }
       async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); if(j && Array.isArray(j.rows)){ renderHistoryGrouped(j.rows); } } catch(_){} }
       function renderHistory(rows){
         const div = document.getElementById('matchHistory'); if(!div) return;
