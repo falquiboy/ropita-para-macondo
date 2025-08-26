@@ -25,10 +25,10 @@
       .cell.dl { background: #cffafe; }
       .cell.center .star { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #f59e0b; font-size: 14px; opacity: 0.9; }
       /* Occupied cell highlight (cream background) */
-      .cell.occ { background: #fff4d6; border-color: #8b5a2b; }
+      .cell.occ { background: #fff4d6; border-color: #d2b48c; }
       /* Board tile letter + value (subscript) */
-      .cell .board-letter { font-weight: 800; }
-      .cell .board-val { position: absolute; right: 2px; bottom: 1px; font-size: 8px; font-weight: 700; line-height: 1; }
+      .cell .board-letter { font-weight: 800; font-size: calc(var(--cell-size) * 0.68); line-height: 1; }
+      .cell .board-val { position: absolute; right: 2px; bottom: 1px; font-size: calc(var(--cell-size) * 0.30); font-weight: 700; line-height: 1; }
       pre { background: #111; color: #0f0; padding: 0.5rem; max-height: 240px; overflow: auto; }
       input[type="text"] { padding: 0.25rem 0.5rem; }
       button { padding: 0.4rem 0.8rem; }
