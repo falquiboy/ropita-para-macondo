@@ -220,11 +220,7 @@
       <span id="klv2Status">KLV2: not loaded</span>
     </div>
 
-    <h3>Tiles Mapping</h3>
-    <div class="row" style="align-items:flex-start">
-      <button id="toggleTilesMap">Show/Hide</button>
-    </div>
-    <div id="tilesMap" style="display:none"></div>
+    
 
     <script>
       // ===== Partida vs Bot =====
@@ -913,7 +909,7 @@
         document.getElementById('matchAIMove').onclick=doAIMove;
         document.getElementById('matchHistoryRefresh').onclick=refreshHistory;
         document.getElementById('matchSubmitPlay').onclick=submitPlay;
-        const tbtn = document.getElementById('toggleTilesMap'); if (tbtn){ tbtn.onclick = ()=>{ const el=document.getElementById('tilesMap'); if(!el) return; const show = (el.style.display==='none'); el.style.display = show? 'grid':'none'; if (show) renderTilesMap(); }; }
+        // Tiles map now displayed in sidebar and updated on refresh
         // Rack order change
         const ordSel = document.getElementById('matchRackOrder');
         if (ordSel){
