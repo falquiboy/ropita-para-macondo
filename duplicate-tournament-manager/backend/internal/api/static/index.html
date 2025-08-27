@@ -66,10 +66,22 @@
       .tile-card .sample .val { position:absolute; right:2px; bottom:1px; font-size:8px; font-weight:600; opacity:.85; line-height:1; }
       /* Tiles mapping rows (6 groups) */
       /* Removed old auto-fill grid to maintain grouping */
+      /* Final state UI */
+      .final-banner { margin: 8px 0; padding: 8px 10px; border-radius: 6px; font-weight: 600; font-size: 14px; }
+      .final-banner.win { background:#ecfdf5; color:#065f46; border:1px solid #a7f3d0; }
+      .final-banner.lose { background:#fef2f2; color:#991b1b; border:1px solid #fecaca; }
+      .final-banner.tie { background:#f3f4f6; color:#111827; border:1px solid #e5e7eb; }
+      .final-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: none; align-items: center; justify-content: center; z-index: 50; }
+      .final-modal .panel { background:#fff; border-radius:8px; padding:16px; width: min(92vw, 520px); box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
+      .final-modal .title { font-size:18px; font-weight:700; margin-bottom:8px; }
+      .final-modal .meta { font-size:14px; color:#374151; margin-bottom:12px; }
+      .final-modal .actions { display:flex; gap:8px; justify-content:flex-end; }
+      .badge-final { position:absolute; top:-10px; right:-10px; background:#111827; color:#fff; font-size:10px; padding:2px 6px; border-radius:10px; opacity:.9; }
     </style>
   </head>
   <body>
     <h1>Duplicate Tournament Manager (MVP)</h1>
+    <div id="finalBanner" class="final-banner" style="display:none"></div>
 
     <h2>Partida vs Bot</h2>
     <div class="row">
@@ -122,7 +134,10 @@
       </div>
       <div style="display:flex;flex-direction:column">
         <div class="coords-row" id="matchTopCoords"></div>
-        <div class="grid" id="matchBoard"></div>
+        <div style="position:relative">
+          <div class="grid" id="matchBoard"></div>
+          <div id="boardBadge" class="badge-final" style="display:none">Finalizada</div>
+        </div>
         <div style="margin-top:4px;font-size:12px;color:#6b7280" title="Barra espaciadora: cambia dirección de tipeo">Inicio: <span id="matchCoordLabel">—</span></div>
       </div>
       <div id="tilesSidebar" style="margin-left:12px; min-width: 360px; flex: 1;">
@@ -134,6 +149,18 @@
     <div class="row">
       <div class="rack">Rack: <div id="matchRack" class="rack" style="margin-left:6px"></div></div>
       <div style="margin-left:1rem">Score: <span id="matchScore"></span> | Bolsa: <span id="matchBag"></span> | No vistas: <span id="matchUnseen"></span> <span id="matchPhase" style="margin-left:8px;color:#2563eb;font-weight:600"></span></div>
+    </div>
+
+    <div id="finalModal" class="final-modal">
+      <div class="panel">
+        <div class="title">Partida finalizada</div>
+        <div id="finalMeta" class="meta"></div>
+        <div class="actions">
+          <button id="finalNew">Nueva partida</button>
+          <button id="finalAnalyze">Análisis post‑mortem</button>
+          <button id="finalClose">Cerrar</button>
+        </div>
+      </div>
     </div>
 
     <div class="row" style="align-items:flex-start">
@@ -247,6 +274,8 @@
       let draggingKind = null; // 'rack' | 'board' | null
       let rackDragFrom = -1;
       let lastHighlight = null; // Set<number> of board indices to highlight
+      let matchOver = false; // GAME_OVER state
+      let endReason = '';
 
       function initMatchBoard() {
         if (!matchBoardEl) matchBoardEl = document.getElementById('matchBoard');
@@ -365,6 +394,52 @@
           else { lab.textContent = '—'; }
         }
       }
+      function setControlsEnabled(on){
+        const ids = ['matchSubmitPlay','matchPass','matchExchange','matchAIMove','matchRackOrder'];
+        ids.forEach(id=>{ const el=document.getElementById(id); if(el) el.disabled = !on; });
+      }
+      function computeEndReasonFromRows(rows){
+        try{
+          if(!Array.isArray(rows) || rows.length===0) return '';
+          const types = rows.map(r=>String(r.type||'').toUpperCase());
+          if (types.includes('END_RACK_PTS')) return 'Vaciar atril';
+          const endPenIdxs = types.reduce((acc,t,i)=>{ if(t==='END_RACK_PENALTY') acc.push(i); return acc; }, []);
+          if (endPenIdxs.length >= 2 && endPenIdxs[endPenIdxs.length-1] === types.length-1) return '4 turnos sin puntuar';
+          return '';
+        }catch(_){ return ''; }
+      }
+      function updateEndgameUI(snapshot){
+        const ps = String(snapshot.play_state||'');
+        const over = (ps.toUpperCase().includes('GAME_OVER'));
+        const banner = document.getElementById('finalBanner');
+        const badge = document.getElementById('boardBadge');
+        if (!over){ matchOver=false; if(banner) banner.style.display='none'; if(badge) badge.style.display='none'; setControlsEnabled(true); return; }
+        matchOver = true; setControlsEnabled(false);
+        if (badge) badge.style.display='inline-block';
+        const scores = Array.isArray(snapshot.final_score)? snapshot.final_score : (Array.isArray(snapshot.score)? snapshot.score : []);
+        const a = scores[0]|0, b = scores[1]|0;
+        const win = (snapshot.winner==null? null : Number(snapshot.winner));
+        let cls='tie', who='Empate';
+        if (win===0) { cls='win'; who='Tú'; }
+        else if (win===1) { cls='lose'; who='Bot'; }
+        if (banner){
+          banner.className = 'final-banner ' + cls;
+          const reason = endReason || (Number(snapshot.bag)===0? 'Endgame (bolsa vacía)' : '');
+          banner.textContent = `Partida finalizada · Ganador: ${who} (${a}–${b})` + (reason? ` · Cierre: ${reason}`:'');
+          banner.style.display = 'block';
+        }
+        try{
+          const key = 'finalModalShown_'+String(snapshot.id||'');
+          const shown = localStorage.getItem(key);
+          if (!shown){
+            const mod = document.getElementById('finalModal');
+            const meta = document.getElementById('finalMeta');
+            if (meta){ meta.textContent = `Ganador: ${who} (${a}–${b})` + (endReason? ` · Cierre: ${endReason}`:''); }
+            if (mod){ mod.style.display='flex'; }
+            localStorage.setItem(key, '1');
+          }
+        }catch(_){ }
+      }
       function setMatchInfo(t){ document.getElementById('matchInfo').textContent = t; }
       function tokenLabel(tk){
         if (!tk) return '';
@@ -431,13 +506,15 @@
         // Update vowels/consonants summary (based on unseen)
         try {
           const vowelsSet = new Set(['A','E','I','O','U']);
-          let vct = 0, cct = 0;
+          let vct = 0, cct = 0, jok = 0;
           for (const [kRaw, v] of Object.entries(unseenMap||{})){
             const k = String(kRaw||'').toUpperCase();
-            if (k === '?' || !Number.isFinite(v)) continue;
-            if (vowelsSet.has(k)) vct += v; else cct += v;
+            const n = Number(v)||0;
+            if (k === '?') { jok += n; continue; }
+            if (!Number.isFinite(n)) continue;
+            if (vowelsSet.has(k)) vct += n; else cct += n;
           }
-          const sum = document.getElementById('tilesSummary'); if (sum) sum.textContent = `Vocales: ${vct} | Consonantes: ${cct}`;
+          const sum = document.getElementById('tilesSummary'); if (sum) sum.textContent = `Vocales: ${vct} | Consonantes: ${cct} | Comodines: ${jok}`;
         } catch(_) { /* ignore */ }
         const groups = orderedGroupsForMap();
         for (const grp of groups){
@@ -761,14 +838,14 @@
         const j = await res.json(); matchId = j.id; rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts();
         // Aplicar orden persistente del rack
         try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
-        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}`); initMatchBoard(); await refreshUnseen(); await refreshHistory(); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } }
+        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}`); initMatchBoard(); await refreshUnseen(); await refreshHistory(); updateEndgameUI(j); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } }
       async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts();
         // Reaplicar orden persistente del rack en cada surtido
         try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
-        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; startCell=null; placeDir='H'; renderMatchBoard(); await refreshUnseen(); await refreshHistory();
+        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; startCell=null; placeDir='H'; renderMatchBoard(); await refreshUnseen(); await refreshHistory(); updateEndgameUI(j);
         // Tiles mapping updated via refreshUnseen()
       }
-      async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); if(j && Array.isArray(j.rows)){ renderHistoryGrouped(j.rows); } } catch(_){} }
+      async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); if(j && Array.isArray(j.rows)){ computeLastHighlightFromRows(j.rows); endReason = computeEndReasonFromRows(j.rows); renderHistoryGrouped(j.rows); renderMatchBoard(); } } catch(_){} }
       function computeLastHighlightFromRows(rows){
         try{
           if (!Array.isArray(rows) || rows.length===0) { lastHighlight=null; return; }
@@ -1234,6 +1311,16 @@
         await fetchTournament();
       };
       $('#refresh').onclick = fetchTournament;
+      // Final modal buttons
+      (function(){
+        const mod = document.getElementById('finalModal');
+        const btnC = document.getElementById('finalClose');
+        const btnN = document.getElementById('finalNew');
+        const btnA = document.getElementById('finalAnalyze');
+        if(btnC) btnC.onclick = ()=>{ if(mod) mod.style.display='none'; };
+        if(btnN) btnN.onclick = ()=>{ if(mod) mod.style.display='none'; document.getElementById('matchCreate')?.click(); };
+        if(btnA) btnA.onclick = ()=>{ alert('Análisis post‑mortem: próximamente'); };
+      })();
 
       $('#setBoard').onclick = async () => {
         if (!tid) return log('Create tournament first');
