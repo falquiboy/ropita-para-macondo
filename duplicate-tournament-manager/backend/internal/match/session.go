@@ -86,6 +86,8 @@ func NewSession(id, ruleset, kwgPath string) (*Session, error) {
     g.StartGame()
     // Default to SINGLE challenge rule per Spanish preference
     g.SetChallengeRule(pb.ChallengeRule_SINGLE)
+    // OSPS: end after two scoreless turns per player (4 consecutives total)
+    g.SetMaxScorelessTurns(4)
     ld, err := tilemapping.GetDistribution(cfg.WGLConfig(), "Spanish")
     if err != nil { return nil, err }
 
