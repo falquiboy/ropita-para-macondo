@@ -29,6 +29,9 @@
       /* Board tile letter + value (subscript) */
       .cell .board-letter { font-weight: 600; font-size: calc(var(--cell-size) * 0.64); line-height: 1; transform: translateX(-2px); }
       .cell .board-letter.digraph { font-size: calc(var(--cell-size) * 0.56); }
+      .cell .board-letter.blank { color: #dc2626; font-style: normal; transform: none; }
+      /* Last play highlight */
+      .cell.occ.last { background: #ffe8b3; border-color: #c79b56; }
       .cell .board-val { position: absolute; right: 2px; bottom: 1px; font-size: calc(var(--cell-size) * 0.30); font-weight: 700; line-height: 1; }
       pre { background: #111; color: #0f0; padding: 0.5rem; max-height: 240px; overflow: auto; }
       input[type="text"] { padding: 0.25rem 0.5rem; }
@@ -54,19 +57,15 @@
       .coords-spacer { height: var(--header-h); }
       /* Tiles mapping grid */
       .tiles-grid { margin-top: 6px; display: flex; flex-direction: column; gap: 8px; }
-      .tiles-row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(56px, auto); gap: 8px; align-items: center; }
-      .tile-card { display:flex; align-items:center; gap:8px; padding:6px 8px; border:1px solid #e5e7eb; border-radius:6px; background:#fff; min-height: 40px; justify-content: center; }
+      .tiles-row { display: flex; gap: 8px; align-items: center; justify-content: flex-start; }
+      /* Minimal items: count first (fixed width), then uniform square sample */
+      .tile-card { display:flex; align-items:center; gap:6px; padding:0; border:0; border-radius:0; background:transparent; min-height: auto; justify-content: flex-start; }
       .tile-card.dim { opacity: .35; }
+      .tile-card .count { display:inline-block; min-width: 22px; text-align:right; font-size:12px; color:#111; font-weight:700; font-variant-numeric: tabular-nums; }
       .tile-card .sample { display:inline-flex; align-items:center; justify-content:center; position:relative; width:26px; height:26px; border:1px solid #bbb; border-radius:3px; background:#fff; font-weight:700; font-size:15px; }
       .tile-card .sample .val { position:absolute; right:2px; bottom:1px; font-size:8px; font-weight:600; opacity:.85; line-height:1; }
-      .tile-card .count { font-size:12px; color:#111; font-weight:600; }
-      /* Tiles mapping grid */
-      #tilesMap { margin-top: 6px; display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
-      .tile-card { display:flex; align-items:center; gap:8px; padding:6px 8px; border:1px solid #e5e7eb; border-radius:6px; background:#fff; }
-      .tile-card .sample { display:inline-flex; align-items:center; justify-content:center; position:relative; width:26px; height:26px; border:1px solid #bbb; border-radius:3px; background:#fff; font-weight:700; font-size:15px; }
-      .tile-card .sample .val { position:absolute; right:2px; bottom:1px; font-size:8px; font-weight:600; opacity:.85; line-height:1; }
-      .tile-card .label { font-weight:600; font-size:12px; }
-      .tile-card .meta { font-size:11px; color:#6b7280; }
+      /* Tiles mapping rows (6 groups) */
+      /* Removed old auto-fill grid to maintain grouping */
     </style>
   </head>
   <body>
@@ -99,14 +98,20 @@
       <button id="matchSubmitPlay" title="Enviar jugada (Enter)">Jugar</button>
       <label style="display:flex;align-items:center;gap:4px"><input id="matchAutoAI" type="checkbox"/> Auto AI</label>
     </div>
-    <div class="row">
-      <label>KWG Preset
-        <select id="matchKwgPreset">
+      <div class="row">
+        <label>KWG Preset
+          <select id="matchKwgPreset">
           <option value="">— Auto —</option>
           <option value="FILE2017.kwg">FILE2017.kwg (repo root)</option>
           <option value="lexica/FILE2017.kwg">FILE2017.kwg (DUPMAN/lexica)</option>
           <option value="FISE2016_converted.kwg">FISE2016_converted.kwg (repo root)</option>
           <option value="/Users/isaacfalconer/DB_sources/gaddag/FISE2016_converted.kwg">FISE2016_converted.kwg (DB_sources)</option>
+        </select>
+      </label>
+      <label style="margin-left:8px">Desafío
+        <select id="matchChallengeRule">
+          <option value="single" selected>Single</option>
+          <option value="void">Void (rechazar inválidas)</option>
         </select>
       </label>
     </div>
@@ -122,12 +127,13 @@
       </div>
       <div id="tilesSidebar" style="margin-left:12px; min-width: 360px; flex: 1;">
         <h3 style="margin:6px 0 4px">Tiles Mapping</h3>
+        <div id="tilesSummary" style="margin:4px 0 6px; font-size:12px; color:#374151; font-weight:600"></div>
         <div id="tilesMap" class="tiles-grid"></div>
       </div>
     </div>
     <div class="row">
       <div class="rack">Rack: <div id="matchRack" class="rack" style="margin-left:6px"></div></div>
-      <div style="margin-left:1rem">Score: <span id="matchScore"></span> | Bolsa: <span id="matchBag"></span></div>
+      <div style="margin-left:1rem">Score: <span id="matchScore"></span> | Bolsa: <span id="matchBag"></span> | No vistas: <span id="matchUnseen"></span> <span id="matchPhase" style="margin-left:8px;color:#2563eb;font-weight:600"></span></div>
     </div>
 
     <div class="row" style="align-items:flex-start">
@@ -240,6 +246,7 @@
       let matchBonusRows = null; // 15 strings from server with bonus codes
       let draggingKind = null; // 'rack' | 'board' | null
       let rackDragFrom = -1;
+      let lastHighlight = null; // Set<number> of board indices to highlight
 
       function initMatchBoard() {
         if (!matchBoardEl) matchBoardEl = document.getElementById('matchBoard');
@@ -301,7 +308,7 @@
           // remove previous bonus/star
           const prevB = cells[i].querySelector('.bonus'); if (prevB) prevB.remove();
           const prevS = cells[i].querySelector('.star'); if (prevS) prevS.remove();
-          cells[i].classList.remove('tw','dw','tl','dl','center','occ');
+          cells[i].classList.remove('tw','dw','tl','dl','center','occ','last');
           // add arrow on start cell (typing aid only). Hide once there is any pending placement or if occupied
           if (startCell && !hasPending){
             const si = startCell.row*15 + startCell.col;
@@ -335,6 +342,7 @@
           } else {
             // Occupied cell: add cream background; show bold letter + numeric subscript
             cells[i].classList.add('occ');
+            if (lastHighlight && lastHighlight.has(i)) { cells[i].classList.add('last'); }
             const show = placed || tk;
             if (show && show.trim()){
               const letter = document.createElement('span');
@@ -344,6 +352,7 @@
               if (label.length > 1) letter.classList.add('digraph');
               cells[i].appendChild(letter);
               const isBlank = isPlacedBlankToken(show) || show==='?';
+              if (isBlank) { letter.classList.add('blank'); letter.textContent = tokenLabel(show).toLowerCase(); }
               const val = nominalValueFor(show);
               if (!isBlank && val!=null){ const vs=document.createElement('span'); vs.className='board-val'; vs.textContent=String(val); cells[i].appendChild(vs); }
             }
@@ -404,14 +413,7 @@
         for (const tk of toks){ if (!tk || tk===' ') continue; const key = tokenKeyForValue(tk); cnt[key] = (cnt[key]||0)+1; }
         return cnt;
       }
-      function computeUnseen(boardRows, myRack){
-        const init = initialCounts();
-        const used = countTokensInRows(boardRows);
-        const mine = countTokensInRack(myRack);
-        const unseen = {};
-        for (const k in init){ unseen[k] = Math.max(0, init[k] - (used[k]||0) - (mine[k]||0)); }
-        return unseen;
-      }
+      // Unseen tiles rendering driven by backend (/matches/{id}/unseen)
       function orderedGroupsForMap(){
         // 6 groups, in order; include V between F and Y as requested
         return [
@@ -423,47 +425,67 @@
           ['S','R','N','T','C','D','M','P']
         ];
       }
-      function renderTilesMap(boardRows, myRack){
+      function renderTilesUnseen(unseenMap){
         const root = document.getElementById('tilesMap'); if(!root) return;
-        const unseen = computeUnseen(boardRows, myRack);
         root.innerHTML='';
+        // Update vowels/consonants summary (based on unseen)
+        try {
+          const vowelsSet = new Set(['A','E','I','O','U']);
+          let vct = 0, cct = 0;
+          for (const [kRaw, v] of Object.entries(unseenMap||{})){
+            const k = String(kRaw||'').toUpperCase();
+            if (k === '?' || !Number.isFinite(v)) continue;
+            if (vowelsSet.has(k)) vct += v; else cct += v;
+          }
+          const sum = document.getElementById('tilesSummary'); if (sum) sum.textContent = `Vocales: ${vct} | Consonantes: ${cct}`;
+        } catch(_) { /* ignore */ }
         const groups = orderedGroupsForMap();
         for (const grp of groups){
           const row = document.createElement('div'); row.className='tiles-row';
           for (const key of grp){
-            const count = unseen[key]||0;
+            const count = unseenMap[key]||0;
             const tk = (key.length>1? ('['+key+']') : key);
             const card = document.createElement('div'); card.className='tile-card' + (count===0? ' dim':'');
+            const countEl = document.createElement('div'); countEl.className='count'; countEl.textContent = String(count);
             const sample = document.createElement('div'); sample.className='sample';
             const lbl = tokenLabel(tk).toUpperCase();
             sample.textContent = lbl;
-            const val = nominalValueFor(tk);
-            if (val!=null && tk!=='?'){ const vs=document.createElement('span'); vs.className='val'; vs.textContent=String(val); sample.appendChild(vs); }
-            const countEl = document.createElement('div'); countEl.className='count'; countEl.textContent = 'x' + String(count);
-            card.appendChild(sample); card.appendChild(countEl);
+            // Do not show point values in tiles mapping (cleaner look)
+            card.appendChild(countEl); card.appendChild(sample);
             row.appendChild(card);
           }
           root.appendChild(row);
         }
       }
-      function renderTilesMap(){
-        const root = document.getElementById('tilesMap'); if(!root) return;
-        root.innerHTML = '';
-        const tokens = ['?','A','B','C','[CH]','D','E','F','G','H','I','J','L','[LL]','M','N','Ñ','O','P','Q','R','[RR]','S','T','U','V','X','Y','Z'];
-        for (const tk of tokens){
-          const card = document.createElement('div'); card.className='tile-card';
-          const sample = document.createElement('div'); sample.className='sample';
-          const lbl = tokenLabel(tk).toUpperCase();
-          sample.textContent = lbl;
-          const val = nominalValueFor(tk);
-          if (val!=null && tk!=='?'){ const vs=document.createElement('span'); vs.className='val'; vs.textContent=String(val); sample.appendChild(vs); }
-          const text = document.createElement('div');
-          const title = document.createElement('div'); title.className='label'; title.textContent = lbl + (tk.startsWith('[')? ' (digraph)':'');
-          const meta = document.createElement('div'); meta.className='meta'; meta.textContent = (val!=null? (val+ ' pts') : 'comodín');
-          text.appendChild(title); text.appendChild(meta);
-          card.appendChild(sample); card.appendChild(text);
-          root.appendChild(card);
-        }
+      async function refreshUnseen(){
+        if (!matchId) return;
+        try {
+          const r = await fetch(`/matches/${matchId}/unseen`);
+          const j = await r.json();
+          if (j && !j.error){
+            // Update counts
+            const bagEl = document.getElementById('matchBag'); if (bagEl) bagEl.textContent = String(j.bag_remaining||0);
+            const unEl = document.getElementById('matchUnseen'); if (unEl) unEl.textContent = String(j.total_unseen||0);
+            const ph = document.getElementById('matchPhase');
+            if (ph){
+              const br = Number(j.bag_remaining||0);
+              ph.textContent = (br===0? 'Endgame' : (br===1? 'Pre‑endgame' : ''));
+            }
+            // Disable exchange button in endgame
+            const exBtn = document.getElementById('matchExchange'); if (exBtn) exBtn.disabled = (Number(j.bag_remaining||0)===0);
+            // Build unseen map for rendering using normalized keys (CH/LL/RR or single letters/'?')
+            const unseen = {};
+            const tiles = Array.isArray(j.tiles)? j.tiles : [];
+            for (const pair of tiles){
+              const label = Array.isArray(pair) ? pair[0] : (pair && pair[0]);
+              const ct = Array.isArray(pair) ? pair[1] : (pair && pair[1]);
+              const key = tokenKeyForValue(String(label||''));
+              const num = Number(ct)||0;
+              unseen[key] = (unseen[key]||0) + num;
+            }
+            renderTilesUnseen(unseen);
+          }
+        } catch (_) { /* ignore */ }
       }
       function renderRack(){
         const el = document.getElementById('matchRack');
@@ -734,19 +756,59 @@
       async function createMatch(sim=false){
         const kwgSel = document.getElementById('matchKwgPreset');
         const kwg = (kwgSel && kwgSel.value) ? kwgSel.value : '';
-        const res = await fetch('/matches', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ kwg })});
+        const chall = (document.getElementById('matchChallengeRule')?.value)||'single';
+        const res = await fetch('/matches', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ kwg, challenge: chall })});
         const j = await res.json(); matchId = j.id; rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts();
         // Aplicar orden persistente del rack
         try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
-        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}`); initMatchBoard(); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } }
+        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}`); initMatchBoard(); await refreshUnseen(); await refreshHistory(); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } }
       async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); rackTokensArr = tokensFromBracketStr(j.rack||''); rebuildRackCounts();
         // Reaplicar orden persistente del rack en cada surtido
         try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
-        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchBag').textContent = j.bag; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; startCell=null; placeDir='H'; renderMatchBoard();
-        // Render tiles mapping with unseen counts (bag + opponent by inference)
-        try{ renderTilesMap(j.board_rows||[], j.rack||''); }catch(_){ }
+        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; startCell=null; placeDir='H'; renderMatchBoard(); await refreshUnseen(); await refreshHistory();
+        // Tiles mapping updated via refreshUnseen()
       }
       async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); if(j && Array.isArray(j.rows)){ renderHistoryGrouped(j.rows); } } catch(_){} }
+      function computeLastHighlightFromRows(rows){
+        try{
+          if (!Array.isArray(rows) || rows.length===0) { lastHighlight=null; return; }
+          // Find last tile placement event
+          let evt = null;
+          for (let i=rows.length-1; i>=0; i--){
+            const t = String(rows[i].type||'').toUpperCase();
+            if (t.includes('PLAY') || t.includes('TILE') || t.includes('MOVE')) { evt = rows[i]; break; }
+          }
+          if (!evt) { lastHighlight=null; return; }
+          const row = evt.row|0, col = evt.col|0; const dir = (evt.dir||'H').toUpperCase();
+          // If we have PlayedTiles from engine, highlight only placed tiles (non-anchors)
+          const played = (evt.played||'');
+          if (played && played.length){
+            const toks = tokensFromBracketStr(played);
+            const idxs = new Set();
+            let r=row, c=col;
+            for (const tk of toks){
+              if (tk !== '.' && tk.trim() !== '') { idxs.add(r*15 + c); }
+              if (dir==='H') c++; else r++;
+            }
+            lastHighlight = idxs.size ? idxs : null;
+            return;
+          }
+          // Fallback: no played info; highlight only the starting cell
+          lastHighlight = new Set([row*15+col]);
+        } catch(_){ lastHighlight = null; }
+      }
+      async function refreshHistory(){
+        if(!matchId) return;
+        try{
+          const r = await fetch(`/matches/${matchId}/scoresheet`);
+          const j = await r.json();
+          if (j && Array.isArray(j.rows)){
+            computeLastHighlightFromRows(j.rows);
+            renderHistoryGrouped(j.rows);
+            renderMatchBoard();
+          }
+        }catch(_){ /* ignore */ }
+      }
       function renderHistory(rows){
         const div = document.getElementById('matchHistory'); if(!div) return;
         const mapType = (t)=>{

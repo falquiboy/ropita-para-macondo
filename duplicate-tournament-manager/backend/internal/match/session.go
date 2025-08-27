@@ -82,6 +82,10 @@ func NewSession(id, ruleset, kwgPath string) (*Session, error) {
     if err != nil {
         return nil, fmt.Errorf("game init: %w", err)
     }
+    // Initialize history/state and deal racks
+    g.StartGame()
+    // Default to SINGLE challenge rule per Spanish preference
+    g.SetChallengeRule(pb.ChallengeRule_SINGLE)
     ld, err := tilemapping.GetDistribution(cfg.WGLConfig(), "Spanish")
     if err != nil { return nil, err }
 
@@ -91,14 +95,8 @@ func NewSession(id, ruleset, kwgPath string) (*Session, error) {
     sp, _ := aitp.NewAIStaticTurnPlayerFromGame(g, cfg, []equity.EquityCalculator{csc})
 
     s := &Session{ID: id, Ruleset: ruleset, Lexicon: lexName, CFG: cfg, Game: g, LD: ld, KwgName: lexName, sp: sp, csc: csc}
-    // Initialize empty racks first to avoid nil racks in SetRandomRack
-    _ = s.Game.SetRackForOnly(0, tilemapping.RackFromString("", ld.TileMapping()))
-    _ = s.Game.SetRackForOnly(1, tilemapping.RackFromString("", ld.TileMapping()))
+    // Ensure player 0 starts
     s.Game.SetPlayerOnTurn(0)
-    // Deal random racks for both players from the Spanish bag
-    // This respects the current bag state and tile mapping (incl. digraphs)
-    if _, err := s.Game.SetRandomRack(0, nil); err != nil { return nil, fmt.Errorf("deal p0: %w", err) }
-    if _, err := s.Game.SetRandomRack(1, nil); err != nil { return nil, fmt.Errorf("deal p1: %w", err) }
     return s, nil
 }
 
@@ -148,8 +146,9 @@ func (s *Session) PlayHuman(word string, c Coords) (*move.Move, error) {
             tiles := strings.ReplaceAll(pm.TilesString(), ".", "")
             if equalWord(tiles, word) {
                 player := int(s.Game.PlayerOnTurn())
-                if err := s.Game.PlayMove(pm, false, 0); err != nil { return nil, err }
+                if err := s.Game.PlayMove(pm, true, 0); err != nil { return nil, err }
                 s.recordPlayEvent(player, pm)
+                s.maybeAutoChallenge()
                 return pm, nil
             }
         }
@@ -168,8 +167,9 @@ func (s *Session) PlayHuman(word string, c Coords) (*move.Move, error) {
     if only != nil {
         if os.Getenv("DEBUG_MATCH") == "1" { log.Printf("fallback accepting candidate at coords; want=%q", word) }
         player := int(s.Game.PlayerOnTurn())
-        if err := s.Game.PlayMove(only, false, 0); err != nil { return nil, err }
+        if err := s.Game.PlayMove(only, true, 0); err != nil { return nil, err }
         s.recordPlayEvent(player, only)
+        s.maybeAutoChallenge()
         return only, nil
     }
     if os.Getenv("DEBUG_MATCH") == "1" {
@@ -249,7 +249,7 @@ func (s *Session) Exchange(letters string) error {
     pi := s.Game.PlayerOnTurn(); p := int(pi)
     em, err := s.sp.BaseTurnPlayer.NewExchangeMove(pi, letters)
     if err != nil { return err }
-    if err := s.Game.PlayMove(em, false, 0); err != nil { return err }
+    if err := s.Game.PlayMove(em, true, 0); err != nil { return err }
     // Record minimal exchange event (score 0)
     s.appendHist(HistRow{ Ply: len(s.hist)+1, Player: int(p), Type: "EXCH", Word: letters, Row: 0, Col: 0, Dir: "", Score: 0, Cum: s.cumulativeFor(int(p)) })
     return nil
@@ -261,7 +261,7 @@ func (s *Session) Pass() error {
     pi := s.Game.PlayerOnTurn(); p := int(pi)
     pm, err := s.sp.BaseTurnPlayer.NewPassMove(pi)
     if err != nil { return err }
-    if err := s.Game.PlayMove(pm, false, 0); err != nil { return err }
+    if err := s.Game.PlayMove(pm, true, 0); err != nil { return err }
     s.appendHist(HistRow{ Ply: len(s.hist)+1, Player: int(p), Type: "PASS", Word: "", Row: 0, Col: 0, Dir: "", Score: 0, Cum: s.cumulativeFor(int(p)) })
     return nil
 }
@@ -296,7 +296,7 @@ func (s *Session) AIMove(mode AIMode, simIters, simPlies, topK int) (*move.Move,
         if sp == nil { return nil, errors.New("no sim winner") }
         best = sp.Move()
     }
-    if err := s.Game.PlayMove(best, false, 0); err != nil { return nil, err }
+    if err := s.Game.PlayMove(best, true, 0); err != nil { return nil, err }
     s.recordPlayEvent(p, best)
     return best, nil
 }
@@ -322,6 +322,31 @@ func (s *Session) recordPlayEvent(player int, pm *move.Move){
 func (s *Session) appendHist(h HistRow){ s.hist = append(s.hist, h) }
 
 func (s *Session) cumulativeFor(player int) int { return s.Game.PointsFor(player) }
+
+// maybeAutoChallenge auto-issues a challenge from the opponent under SINGLE/DOUBLE/etc when
+// the last words formed are invalid (phony). It does nothing under VOID, and it never
+// challenges valid plays.
+func (s *Session) maybeAutoChallenge(){
+    h := s.Game.History()
+    if h == nil { return }
+    if h.ChallengeRule == pb.ChallengeRule_VOID { return }
+    evs := h.GetEvents(); if len(evs) == 0 { return }
+    last := evs[len(evs)-1]
+    words := last.GetWordsFormed()
+    if len(words) == 0 { return }
+    alph := s.Game.Alphabet()
+    // Build machine words to validate lexically
+    mws := make([]tilemapping.MachineWord, 0, len(words))
+    for _, w := range words {
+        mw, err := tilemapping.ToMachineWord(w, alph)
+        if err != nil { return }
+        mws = append(mws, mw)
+    }
+    if err := s.Game.ValidateWords(s.Game.Lexicon(), mws); err != nil {
+        // It's a phony: current onturn is the opponent, so issue challenge
+        _, _ = s.Game.ChallengeEvent(0, 0)
+    }
+}
 
 // ScoreRows returns a minimal scoresheet either from engine history or from fallback history.
 func (s *Session) ScoreRows() []HistRow {

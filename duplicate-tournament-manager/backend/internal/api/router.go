@@ -91,6 +91,8 @@ func Router(eng Engine) http.Handler {
         switch {
         case r.Method==http.MethodGet && strings.HasSuffix(p, "/bag"):
             mh.Bag(w,r)
+        case r.Method==http.MethodGet && strings.HasSuffix(p, "/unseen"):
+            mh.Unseen(w,r)
         case r.Method==http.MethodGet && strings.HasSuffix(p, "/scoresheet"):
             mh.ScoreSheet(w,r)
         case r.Method==http.MethodGet:
