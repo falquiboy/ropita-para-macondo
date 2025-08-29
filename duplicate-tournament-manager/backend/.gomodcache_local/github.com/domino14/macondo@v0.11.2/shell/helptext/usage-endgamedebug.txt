@@ -1,0 +1,7 @@
+Endgame Debug Mode
+
+commands:
+    mode standard - switch back to standard mode
+
+    l - list the principal variation's nodes
+    t - list the top level of nodes

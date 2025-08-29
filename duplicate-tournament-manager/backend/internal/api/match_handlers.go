@@ -3,12 +3,17 @@ package api
 import (
     "encoding/json"
     "net/http"
+    "strconv"
     "strings"
     "sync"
 
     "dupman/backend/internal/match"
     "github.com/domino14/word-golib/tilemapping"
     pb "github.com/domino14/macondo/gen/api/proto/macondo"
+    "github.com/domino14/macondo/game"
+    aitp "github.com/domino14/macondo/ai/turnplayer"
+    "github.com/domino14/macondo/equity"
+    "github.com/domino14/macondo/move"
 )
 
 type MatchHandlers struct{
@@ -17,6 +22,16 @@ type MatchHandlers struct{
 }
 
 func NewMatchHandlers() *MatchHandlers { return &MatchHandlers{byID: map[string]*match.Session{}} }
+
+// Abort ends the match immediately and marks it as GAME_OVER without rack penalties.
+func (m *MatchHandlers) Abort(w http.ResponseWriter, r *http.Request){
+    id := m.pathID(r.URL.Path)
+    m.mu.RLock(); s := m.byID[id]; m.mu.RUnlock()
+    if s==nil { writeJSON(w,http.StatusNotFound, map[string]string{"error":"not found"}); return }
+    if r.Method != http.MethodPost { writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error":"POST only"}); return }
+    s.Abort()
+    writeJSON(w, http.StatusOK, m.serialize(s))
+}
 
 func (m *MatchHandlers) Create(w http.ResponseWriter, r *http.Request){
     var in struct{ Ruleset string `json:"ruleset"`; KWG string `json:"kwg"`; Challenge string `json:"challenge"` }
@@ -227,4 +242,112 @@ func (m *MatchHandlers) ScoreSheet(w http.ResponseWriter, r *http.Request){
         }
     }
     writeJSON(w, http.StatusOK, map[string]any{ "id": s.ID, "rows": rows })
+}
+
+// Events returns the list of engine events (no synthetic rows), with compact fields.
+func (m *MatchHandlers) Events(w http.ResponseWriter, r *http.Request){
+    id := m.pathID(r.URL.Path)
+    m.mu.RLock(); s := m.byID[id]; m.mu.RUnlock()
+    if s==nil { writeJSON(w,http.StatusNotFound, map[string]string{"error":"not found"}); return }
+    evs := s.Game.History().GetEvents()
+    type Ev struct { Ply int `json:"ply"`; Player int `json:"player"`; Type string `json:"type"`; Row int `json:"row"`; Col int `json:"col"`; Dir string `json:"dir"`; Word string `json:"word"` }
+    out := make([]Ev, 0, len(evs))
+    for i, e := range evs {
+        dir := "H"; if e.GetDirection() == pb.GameEvent_VERTICAL { dir = "V" }
+        word := ""; if ws := e.GetWordsFormed(); len(ws) > 0 { word = ws[0] }
+        out = append(out, Ev{ Ply: i+1, Player: int(e.GetPlayerIndex()), Type: e.GetType().String(), Row: int(e.GetRow()), Col: int(e.GetColumn()), Dir: dir, Word: word })
+    }
+    writeJSON(w, http.StatusOK, map[string]any{ "id": s.ID, "count": len(out), "events": out })
+}
+
+// Position returns a snapshot at a given turn number (0..len(events)).
+// Query: ?turn=<n>. Provides board_rows, racks, bag, score, onturn, events total, and turn index.
+func (m *MatchHandlers) Position(w http.ResponseWriter, r *http.Request){
+    id := m.pathID(r.URL.Path)
+    m.mu.RLock(); s := m.byID[id]; m.mu.RUnlock()
+    if s==nil { writeJSON(w,http.StatusNotFound, map[string]string{"error":"not found"}); return }
+    turn := 0
+    if t := r.URL.Query().Get("turn"); t != "" {
+        if n, err := strconv.Atoi(t); err == nil && n >= 0 { turn = n }
+    }
+    hist := s.Game.History()
+    rules := s.Game.Rules()
+    ng, err := game.NewFromHistory(hist, rules, 0)
+    if err != nil { writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()}); return }
+    // Clamp turn to available events
+    if turn > len(hist.Events) { turn = len(hist.Events) }
+    if turn < 0 { turn = 0 }
+    if err := ng.PlayToTurn(turn); err != nil { writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()}); return }
+    rows := make([]string, 15)
+    alph := ng.Alphabet()
+    for rr:=0; rr<15; rr++ {
+        var sb strings.Builder
+        for cc:=0; cc<15; cc++ {
+            ml := ng.Board().GetLetter(rr,cc)
+            if ml == 0 { sb.WriteByte(' ') } else { sb.WriteString(alph.Letter(ml)) }
+        }
+        rows[rr] = sb.String()
+    }
+    out := map[string]any{
+        "id": s.ID,
+        "turn": turn,
+        "events": len(hist.Events),
+        "onturn": ng.PlayerOnTurn(),
+        "board_rows": rows,
+        "rack": ng.RackFor(ng.PlayerOnTurn()).String(),
+        "rack_you": ng.RackFor(0).String(),
+        "rack_bot": ng.RackFor(1).String(),
+        "bag": ng.Bag().TilesRemaining(),
+        "ruleset": s.Ruleset,
+        "lexicon": s.Lexicon,
+        "play_state": ng.Playing().String(),
+        "score": []int{ ng.PointsFor(0), ng.PointsFor(1) },
+    }
+    writeJSON(w, http.StatusOK, out)
+}
+
+// MovesAt returns generated moves (static equity) for a given match position at turn N.
+// Query: ?turn=<n>
+func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request){
+    id := m.pathID(r.URL.Path)
+    m.mu.RLock(); s := m.byID[id]; m.mu.RUnlock()
+    if s==nil { writeJSON(w,http.StatusNotFound, map[string]string{"error":"not found"}); return }
+    turn := 0
+    if t := r.URL.Query().Get("turn"); t != "" {
+        if n, err := strconv.Atoi(t); err == nil && n >= 0 { turn = n }
+    }
+    hist := s.Game.History()
+    rules := s.Game.Rules()
+    ng, err := game.NewFromHistory(hist, rules, 0)
+    if err != nil { writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()}); return }
+    if turn > len(hist.Events) { turn = len(hist.Events) }
+    if turn < 0 { turn = 0 }
+    if err := ng.PlayToTurn(turn); err != nil { writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()}); return }
+    // Prepare static equity calculator and generator
+    csc, _ := equity.NewCombinedStaticCalculator(s.Lexicon, s.CFG, equity.LeavesFilename, equity.PEGAdjustmentFilename)
+    sp, _ := aitp.NewAIStaticTurnPlayerFromGame(ng, s.CFG, []equity.EquityCalculator{csc})
+    mg := sp.MoveGenerator()
+    rack := ng.RackFor(ng.PlayerOnTurn())
+    mg.GenAll(rack, false)
+    // Collect plays
+    type hasPlays interface{ Plays() []*move.Move }
+    plays := []*move.Move{}
+    if hp, ok := mg.(hasPlays); ok { plays = hp.Plays() }
+    res := MovesResponse{}
+    toMove := func(pm *move.Move) Move {
+        if pm == nil { return Move{} }
+        r, c, v := pm.CoordsAndVertical(); dir := "H"; if v { dir = "V" }
+        lv := 0.0; if csc != nil { lv = csc.LeaveValue(pm.Leave()) } else { lv = pm.Equity() - float64(pm.Score()) }
+        eq := pm.Equity(); if eq == 0 { eq = float64(pm.Score()) + lv }
+        raw := strings.ReplaceAll(pm.TilesString(), ".", ""); word := normalizeWordToBrackets(raw)
+        return Move{ Word: word, Row: r, Col: c, Dir: dir, Score: pm.Score(), Leave: pm.LeaveString(), LeaveVal: lv, Equity: eq }
+    }
+    best := -1
+    for _, pm := range plays {
+        if pm == nil || pm.Action() != move.MoveTypePlay { continue }
+        mv := toMove(pm)
+        res.All = append(res.All, mv)
+        if mv.Score > best { res.Best = mv; best = mv.Score; res.Ties = res.Ties[:0] } else if mv.Score == best { res.Ties = append(res.Ties, mv) }
+    }
+    writeJSON(w, http.StatusOK, res)
 }

@@ -21,15 +21,26 @@ else
   fi
 fi
 
-# Args: first non-flag is PORT; support --watch
+# Args: first non-flag is PORT; flags:
+#   --watch / -w        : reinicio automático al detectar cambios
+#   --fg                : correr en foreground (logs en stdout)
+#   --validate-span     : validar la palabra principal contra el KWG en generación
+#   --no-rack-collapse  : no colapsar dígrafos del rack (deja que el engine lo haga)
+#   --sim-timeout-ms=N  : timeout de simulación del wrapper (por si se usa sim)
 WATCH=0
 FG=0
 PORT=""
+VALIDATE_SPAN=0
+RACK_COLLAPSE=1
+SIM_TO_MS=""
 for arg in "$@"; do
   case "$arg" in
     --watch) WATCH=1 ;;
     -w) WATCH=1 ;;
     --fg) FG=1 ;;
+    --validate-span) VALIDATE_SPAN=1 ;;
+    --no-rack-collapse) RACK_COLLAPSE=0 ;;
+    --sim-timeout-ms=*) SIM_TO_MS="${arg#*=}" ;;
     [0-9][0-9][0-9][0-9]) PORT="$arg" ;;
   esac
 done
@@ -98,6 +109,10 @@ export MACONDO_DATA_PATH="$ROOT/macondo/data"
 export KLV2_DIR="$ROOT/lexica"
 # Allow longer simulation requests (ms)
 export MACONDO_SIM_TIMEOUT_MS=${MACONDO_SIM_TIMEOUT_MS:-60000}
+# Optional wrapper tuning
+export VALIDATE_SPAN
+export RACK_COLLAPSE
+if [ -n "$SIM_TO_MS" ]; then export MACONDO_SIM_TIMEOUT_MS="$SIM_TO_MS"; fi
 # Debug flag to trace match plays (see internal/match/session.go)
 export DEBUG_MATCH=${DEBUG_MATCH:-0}
 
@@ -148,6 +163,12 @@ start_instance() {
   done
   if [ "$ok" = "1" ]; then
     echo "Server is up on http://localhost:$PORT (PID: $(cat server.pid))"
+    echo "\nTips:"
+    echo " - Crear partida vs‑bot: botón 'Nueva partida' en la UI"
+    echo " - Abort: botón 'Abortar' (POST /matches/{id}/abort)"
+    echo " - Post‑mortem: tras GAME_OVER, usa ⏮/◀/▶/⏭ y 'Generar' para ver jugadas (POST /moves)"
+    echo " - Validación KWG en generación: VALIDATE_SPAN=$VALIDATE_SPAN (cámbialo con --validate-span)"
+    echo " - Colapso de dígrafos de rack: RACK_COLLAPSE=$RACK_COLLAPSE (desactiva con --no-rack-collapse)"
   else
     echo "Server not healthy yet. See $BACKEND_DIR/server.stderr"
   fi

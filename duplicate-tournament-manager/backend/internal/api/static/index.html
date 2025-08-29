@@ -77,6 +77,11 @@
       .final-modal .meta { font-size:14px; color:#374151; margin-bottom:12px; }
       .final-modal .actions { display:flex; gap:8px; justify-content:flex-end; }
       .badge-final { position:absolute; top:-10px; right:-10px; background:#111827; color:#fff; font-size:10px; padding:2px 6px; border-radius:10px; opacity:.9; }
+      /* Post-mortem moves table selection */
+      #tnTable tbody tr.sel { background:#eef6ff; }
+      #tnTable tbody tr:hover { background:#f3f4f6; cursor:pointer; }
+      /* Preview highlight on empty cells */
+      .cell.last { background:#e6f2ff; border-color:#60a5fa; }
     </style>
   </head>
   <body>
@@ -94,6 +99,7 @@
       <button id="matchRecall">Recall (ultimo)</button>
       <button id="matchRecallAll" title="Esc: devolver todas las fichas al atril">Recall (todos) (Esc)</button>
       <button id="matchPass">Pasar</button>
+      <button id="matchAbort" title="Abortar partida actual">Abortar</button>
       <button id="matchExchange">Intercambiar</button>
       <input id="matchExchangeTiles" type="text" placeholder="Tiles a cambiar (ej: AE)" style="width:12rem; text-transform: uppercase"/>
       <button id="matchAIMove">AI mueve</button>
@@ -139,6 +145,16 @@
           <div id="boardBadge" class="badge-final" style="display:none">Finalizada</div>
         </div>
         <div style="margin-top:4px;font-size:12px;color:#6b7280" title="Barra espaciadora: cambia dirección de tipeo">Inicio: <span id="matchCoordLabel">—</span></div>
+        <div id="turnNav" style="display:none; margin-top:6px; font-size:12px; display:flex; align-items:center; gap:6px">
+          <button id="tnStart" title="Inicio">⏮</button>
+          <button id="tnPrev" title="Atrás">◀</button>
+          <span id="tnMeta">Turno —/—</span>
+          <button id="tnNext" title="Adelante">▶</button>
+          <button id="tnEnd" title="Fin">⏭</button>
+          <button id="tnGen" title="Generar jugadas (estático)" style="margin-left:8px">Generar</button>
+        </div>
+        <div id="tnRacks" style="display:none; margin-top:4px; font-size:12px; color:#374151">Atriles: Tú [ <span id="tnRackYou">—</span> ] · Bot [ <span id="tnRackBot">—</span> ]</div>
+        <div id="turnMoves" style="display:none; margin-top:6px"></div>
       </div>
       <div id="tilesSidebar" style="margin-left:12px; min-width: 360px; flex: 1;">
         <h3 style="margin:6px 0 4px">Tiles Mapping</h3>
@@ -274,6 +290,7 @@
       let draggingKind = null; // 'rack' | 'board' | null
       let rackDragFrom = -1;
       let lastHighlight = null; // Set<number> of board indices to highlight
+      let previewPlacements = {}; // boardIndex -> token (for post-mortem preview)
       let matchOver = false; // GAME_OVER state
       let endReason = '';
 
@@ -303,7 +320,7 @@
           d.addEventListener('click', ()=> onMatchCellClick(i));
           matchBoardEl.appendChild(d);
         }
-        renderMatchBoard();
+        previewPlacements = {}; lastHighlight = null; renderMatchBoard();
       }
       function renderCoords(prefix){
         const top = document.getElementById(prefix+"TopCoords");
@@ -318,11 +335,13 @@
         const hasPending = Object.keys(pendingPlacements).length > 0;
         for(let i=0;i<225;i++){
           const tk = matchBoardState[i] || ' ';
-          const placed = pendingPlacements[i];
+          const pendTk = pendingPlacements[i];
+          const prevTk = previewPlacements[i];
+          const placed = pendTk || prevTk;
           // reset content
           cells[i].textContent = '';
           // Make newly placed tiles draggable; fixed tiles are not draggable
-          if (placed){
+          if (placed && pendTk){
             cells[i].draggable = true;
             cells[i].ondragstart = (ev)=>{ draggingKind='board'; ev.dataTransfer?.setData('text/plain', JSON.stringify({kind:'board', idx:i})); };
             cells[i].ondragend = ()=>{ draggingKind=null; };
@@ -351,6 +370,8 @@
           }
           // show bonus tag and center star when empty
           const hasTile = !!(placed || (tk && tk.trim()));
+          // Apply preview highlight regardless of occupancy
+          if (lastHighlight && lastHighlight.has(i)) { cells[i].classList.add('last'); }
           if (!hasTile){
             const r = (i/15)|0, c = i%15;
             if (r===7 && c===7){
@@ -371,7 +392,6 @@
           } else {
             // Occupied cell: add cream background; show bold letter + numeric subscript
             cells[i].classList.add('occ');
-            if (lastHighlight && lastHighlight.has(i)) { cells[i].classList.add('last'); }
             const show = placed || tk;
             if (show && show.trim()){
               const letter = document.createElement('span');
@@ -395,7 +415,7 @@
         }
       }
       function setControlsEnabled(on){
-        const ids = ['matchSubmitPlay','matchPass','matchExchange','matchAIMove','matchRackOrder'];
+        const ids = ['matchSubmitPlay','matchPass','matchExchange','matchAIMove','matchRackOrder','matchAbort'];
         ids.forEach(id=>{ const el=document.getElementById(id); if(el) el.disabled = !on; });
       }
       function computeEndReasonFromRows(rows){
@@ -843,6 +863,12 @@
         // Reaplicar orden persistente del rack en cada surtido
         try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
         setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : ''); pendingPlacements={}; startCell=null; placeDir='H'; renderMatchBoard(); await refreshUnseen(); await refreshHistory(); updateEndgameUI(j);
+        // Turn navigation visible on GAME_OVER
+        try{
+          const nav=document.getElementById('turnNav');
+          if (nav) nav.style.display = (String(j.play_state||'').toUpperCase().includes('GAME_OVER')? 'flex' : 'none');
+          if (nav && nav.style.display==='flex'){ await initTurnNav(); document.getElementById('tnRacks').style.display='block'; }
+        }catch(_){ }
         // Tiles mapping updated via refreshUnseen()
       }
       async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); if(j && Array.isArray(j.rows)){ computeLastHighlightFromRows(j.rows); endReason = computeEndReasonFromRows(j.rows); renderHistoryGrouped(j.rows); renderMatchBoard(); } } catch(_){} }
@@ -922,6 +948,131 @@
         html += '</tbody></table>';
         div.innerHTML = html;
       }
+      // ==== Turn navigation (post-game) ====
+      let tnTurn = 0, tnEvents = 0, tnPos = null; let tnMoves = []; let tnMoveIdx = -1;
+      async function initTurnNav(){ if(!matchId) return; try{ const ev = await (await fetch(`/matches/${matchId}/events`)).json(); tnEvents = Number(ev.count||0); tnTurn = tnEvents; await loadTurn(tnTurn); }catch(e){ console.warn('turnNav init failed', e); } }
+      async function loadTurn(n){ if(!matchId) return; n = Math.max(0, Math.min(tnEvents, n)); const pos = await (await fetch(`/matches/${matchId}/position?turn=${n}`)).json();
+        // Update board
+        matchBoardState = [].concat(...(pos.board_rows||[]).map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225);
+        // Update rack component to reflect the rack del jugador en turno
+        try {
+          const rackStr = String(pos.rack||'');
+          rackTokensArr = tokensFromBracketStr(rackStr);
+          rackSelIdx.clear();
+          rebuildRackCounts();
+          setMatchRackText();
+        } catch(_) { /* ignore */ }
+        lastHighlight = null;
+        renderMatchBoard();
+        tnPos = pos;
+        const meta = document.getElementById('tnMeta'); if (meta){ const who = (pos.onturn===0? 'Tú':'Bot'); meta.textContent = `Turno ${pos.turn}/${pos.events} · En turno: ${who} · Bolsa: ${pos.bag}`; }
+        const ry = document.getElementById('tnRackYou'); if (ry) ry.textContent = String(pos.rack_you||'');
+        const rb = document.getElementById('tnRackBot'); if (rb) rb.textContent = String(pos.rack_bot||'');
+        tnTurn = pos.turn;
+        await genTurnMoves();
+        // Auto-generate moves for this turn
+        await genTurnMoves();
+      }
+      (function(){ const s=document.getElementById('tnStart'); if(s) s.onclick=()=>loadTurn(0); const p=document.getElementById('tnPrev'); if(p) p.onclick=()=>loadTurn(tnTurn-1); const n=document.getElementById('tnNext'); if(n) n.onclick=()=>loadTurn(tnTurn+1); const e=document.getElementById('tnEnd'); if(e) e.onclick=()=>loadTurn(tnEvents); })();
+
+      async function genTurnMoves(){
+        try{
+          const root = document.getElementById('turnMoves'); if (!root) return;
+          root.style.display = 'block';
+          root.innerHTML = '<em>Generando…</em>';
+          const pos = tnPos; if (!pos) { root.innerHTML = '<em>Sin posición</em>'; return; }
+          // Prefer server-side Macondo generation at historical turn to avoid encoding issues
+          const r = await fetch(`/matches/${matchId}/moves?turn=${tnTurn}`);
+          const j = await r.json();
+          if (j && j.error){ root.innerHTML = `<span style="color:#b91c1c">${j.error}</span>`; return; }
+          // Render compact table for analysis (Score, Equity, Coord ES, Word, Leave) sorted by Equity desc
+          const all = Array.isArray(j.all)? j.all : [];
+          tnMoves = all; tnMoveIdx = -1;
+          const arr = all.map((m,i)=>{
+            const eqNum = (typeof m.equity==='number') ? m.equity : Number(m.equity||0);
+            const coordES = coordsStr(m.row|0, m.col|0, m.dir||'H');
+            const arrow = (String(m.dir||'H').toUpperCase()==='V') ? '(↓)' : '(→)';
+            return { idx:i, score: Number(m.score||0), eq: eqNum, coord: `${coordES} ${arrow}`, word: String(m.word||''), leave: String(m.leave||''), lv: (typeof m.leaveVal==='number'? m.leaveVal : Number(m.leaveVal||0)) };
+          });
+          arr.sort((a,b)=> (b.eq - a.eq));
+          const rows = arr.slice(0, 25).map((r,i)=>{
+            const lv = Number.isFinite(r.lv) ? r.lv.toFixed(2) : '';
+            const eq = Number.isFinite(r.eq) ? r.eq.toFixed(2) : '';
+            const leave = r.leave || '—';
+            return `<tr data-idx="${r.idx}"><td>${i+1}</td><td>${r.score|0}</td><td>${eq}</td><td>${r.coord}</td><td>${r.word}</td><td>${leave}</td><td>${lv}</td></tr>`;
+          }).join('');
+          const warn = (!all.length ? `<div style="margin-top:4px;color:#b91c1c">Sin jugadas. Si VALIDATE_SPAN está activo, puede filtrar todo en posiciones con palabras no españolas en el tablero.</div>` : '');
+          root.innerHTML = `<div style="margin-bottom:4px;color:#374151;font-size:12px">Jugadas: ${all.length}</div>`+
+            `<table id="tnTable" style="border-collapse:collapse;width:100%;font-size:12px"><thead><tr style="background:#f8fafc"><th>#</th><th>Score</th><th>Equity</th><th>Coord</th><th>Palabra</th><th>Leave</th><th>Leave Val</th></tr></thead><tbody>${rows||''}</tbody></table>` + warn;
+          // Click to preview selection (position-based within sorted list)
+          try {
+            const tb = document.getElementById('tnTable');
+            if (tb){ tb.querySelectorAll('tbody tr').forEach((tr,pos)=>{ tr.onclick=()=>{ tnSelPos = pos; previewSelectedMove(); highlightSelectedRow(); }; }); }
+          } catch(_) { }
+          // Auto-select first move
+          if (tnMoves.length > 0) { tnSelPos = 0; previewSelectedMove(); highlightSelectedRow(); }
+        }catch(e){ console.error('genTurnMoves failed', e); }
+      }
+      (function(){ const b=document.getElementById('tnGen'); if (b) b.onclick=genTurnMoves; })();
+      function previewSelectedMove(){
+        if (!Array.isArray(tnMoves) || tnSelPos == null) { previewPlacements={}; lastHighlight=null; renderMatchBoard(); return; }
+        const tb = document.getElementById('tnTable');
+        const max = (tb? tb.querySelectorAll('tbody tr').length : 0);
+        if (tnSelPos < 0 || tnSelPos >= max) { previewPlacements={}; lastHighlight=null; renderMatchBoard(); return; }
+        // Map visual position to original index via data-idx
+        let idx = tnSelPos;
+        try { const tr = tb.querySelectorAll('tbody tr')[tnSelPos]; idx = Number(tr.getAttribute('data-idx')||'-1'); } catch(_){ }
+        if (!(idx>=0 && idx < tnMoves.length)) { previewPlacements={}; lastHighlight=null; renderMatchBoard(); return; }
+        const mv = tnMoves[idx] || {};
+        try{
+          const dir = String(mv.dir||'H').toUpperCase();
+          let r = (mv.row|0), c = (mv.col|0);
+          const dr = (dir==='V')?1:0, dc=(dir==='V')?0:1;
+          const toks = tokensFromBracketStr(String(mv.word||''));
+          previewPlacements = {};
+          const idxs = new Set();
+          let ti = 0;
+          for (let step=0; step<30; step++){
+            if (r<0||r>=15||c<0||c>=15) break;
+            const pos = r*15+c;
+            const boardTk = matchBoardState[pos] || ' ';
+            if (!String(boardTk||'').trim()) {
+              if (ti < toks.length){ previewPlacements[pos] = toks[ti++]; idxs.add(pos); }
+            }
+            if (ti >= toks.length) { /* placed all */ break; }
+            r += dr; c += dc;
+          }
+          lastHighlight = idxs.size ? idxs : null;
+          renderMatchBoard();
+        }catch(_){ /* ignore */ }
+      }
+      function highlightSelectedRow(){
+        try{
+          const tb = document.getElementById('tnTable'); if(!tb) return;
+          const rows = tb.querySelectorAll('tbody tr'); rows.forEach((tr,i)=>{ if (i===tnSelPos) tr.classList.add('sel'); else tr.classList.remove('sel'); });
+          const sel = rows[tnSelPos]; if (sel) sel.scrollIntoView({block:'nearest'});
+        }catch(_){ }
+      }
+      function highlightSelectedRow(){
+        try{
+          const tb = document.getElementById('tnTable'); if(!tb) return;
+          const rows = tb.querySelectorAll('tbody tr'); rows.forEach((tr,i)=>{ if (i===tnSelPos) tr.classList.add('sel'); else tr.classList.remove('sel'); });
+          const sel = rows[tnSelPos]; if (sel) sel.scrollIntoView({block:'nearest'});
+        }catch(_){ }
+      }
+      // Keyboard navigation for preview
+      document.addEventListener('keydown', (e)=>{
+        const nav = document.getElementById('turnNav'); if (!nav || nav.style.display !== 'flex') return;
+        const ae = document.activeElement; const isEditing = (ae && ((ae.tagName === 'INPUT') || (ae.tagName === 'TEXTAREA') || (ae.tagName === 'SELECT') || ae.isContentEditable));
+        if (isEditing) return;
+        if (e.key === 'ArrowDown'){
+          const tb = document.getElementById('tnTable'); const total = (tb? tb.querySelectorAll('tbody tr').length : 0);
+          if (total>0){ tnSelPos = Math.min(total-1, (tnSelPos<0?0:tnSelPos+1)); previewSelectedMove(); highlightSelectedRow(); e.preventDefault(); }
+        } else if (e.key === 'ArrowUp'){
+          const tb = document.getElementById('tnTable'); const total = (tb? tb.querySelectorAll('tbody tr').length : 0);
+          if (total>0){ tnSelPos = Math.max(0, (tnSelPos<0?0:tnSelPos-1)); previewSelectedMove(); highlightSelectedRow(); e.preventDefault(); }
+        }
+      });
       // Grouped renderer: both players in same row; per player show Coord, Word, Pts, Cum
       function renderHistoryGrouped(rows){
         const div = document.getElementById('matchHistory'); if(!div) return;
@@ -1281,6 +1432,29 @@
         })});
         const j = await res.json(); tid = j.id; currentTournament = j; log(j); renderRows(j.board_rows);
       };
+      // Abort current match (testing flow)
+      (function(){
+        const btn = document.getElementById('matchAbort');
+        if (!btn) return;
+        btn.onclick = async () => {
+          if (!matchId) return;
+          if (!confirm('Abortar la partida actual?')) return;
+          try {
+            // Show modal again after abort
+            try { localStorage.removeItem('finalModalShown_'+String(matchId)); } catch(_){}
+            const r = await fetch(`/matches/${matchId}/abort`, { method:'POST' });
+            const j = await r.json();
+            if (j && !j.error) {
+              await refreshMatch();
+              await refreshHistory();
+            } else if (j && j.error) {
+              alert(j.error);
+            }
+          } catch (e) {
+            console.error('abort failed', e);
+          }
+        };
+      })();
       $('#kwgPreset').onchange = () => {
         const v = $('#kwgPreset').value;
         if (!v) return;

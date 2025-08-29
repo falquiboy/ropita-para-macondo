@@ -1,0 +1,4 @@
+./dtype.go
+./errors.go
+./onnx.proto3.pb.go
+./tensor.go

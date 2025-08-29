@@ -1,0 +1,17 @@
+add [params] - Add a play to the list of plays
+
+Example:
+   add 3J FOO
+   add K5 BAR.D
+   add exchange ABC
+   add pass
+
+
+The first two examples take in a set of coordinates and letters.
+If the number is first, the play is horizontal, otherwise, it is vertical,
+as in standard Crossword Game notation.
+
+When specifying a play that goes through a letter already on the board,
+you must specify a period (.) for the letter.
+
+The third example adds an exchange of three tiles. Specify the blank as ?.

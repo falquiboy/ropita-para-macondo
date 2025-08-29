@@ -95,6 +95,14 @@ func Router(eng Engine) http.Handler {
             mh.Unseen(w,r)
         case r.Method==http.MethodGet && strings.HasSuffix(p, "/scoresheet"):
             mh.ScoreSheet(w,r)
+        case r.Method==http.MethodGet && strings.HasSuffix(p, "/events"):
+            mh.Events(w,r)
+        case r.Method==http.MethodGet && strings.HasSuffix(p, "/position"):
+            mh.Position(w,r)
+        case r.Method==http.MethodGet && strings.HasSuffix(p, "/moves"):
+            mh.MovesAt(w,r)
+        case r.Method==http.MethodPost && strings.HasSuffix(p, "/abort"):
+            mh.Abort(w,r)
         case r.Method==http.MethodGet:
             mh.Get(w,r)
         case r.Method==http.MethodPost && strings.HasSuffix(p, "/play"):

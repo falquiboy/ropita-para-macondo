@@ -1,0 +1,5 @@
+./grpc_service.pb.go
+./grpc_service_grpc.pb.go
+./health.pb.go
+./health_grpc.pb.go
+./model_config.pb.go

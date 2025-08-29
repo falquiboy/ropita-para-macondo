@@ -325,6 +325,18 @@ func (s *Session) appendHist(h HistRow){ s.hist = append(s.hist, h) }
 
 func (s *Session) cumulativeFor(player int) int { return s.Game.PointsFor(player) }
 
+// Abort force-ends the match without applying rack penalties. It sets history
+// play state to GAME_OVER and records final scores as-is.
+func (s *Session) Abort() {
+    s.mu.Lock(); defer s.mu.Unlock()
+    h := s.Game.History()
+    if h == nil { return }
+    if s.Game.Playing() == pb.PlayState_GAME_OVER { return }
+    h.PlayState = pb.PlayState_GAME_OVER
+    // Ensure final scores are recorded for UI snapshot
+    s.Game.AddFinalScoresToHistory()
+}
+
 // maybeAutoChallenge auto-issues a challenge from the opponent under SINGLE/DOUBLE/etc when
 // the last words formed are invalid (phony). It does nothing under VOID, and it never
 // challenges valid plays.

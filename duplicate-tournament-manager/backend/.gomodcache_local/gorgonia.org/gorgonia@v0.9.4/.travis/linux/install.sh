@@ -1,0 +1,3 @@
+set -ex
+go get -d -u -t -v ./...
+set +ex
