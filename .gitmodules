@@ -1,0 +1,6 @@
+[submodule "macondo"]
+	path = macondo
+	url = https://github.com/domino14/macondo.git
+[submodule "wolges"]
+	path = wolges
+	url = https://github.com/andy-k/wolges.git
