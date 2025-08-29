@@ -104,6 +104,7 @@
       <input id="matchExchangeTiles" type="text" placeholder="Tiles a cambiar (ej: AE)" style="width:12rem; text-transform: uppercase"/>
       <button id="matchAIMove">AI mueve</button>
       <select id="matchAIMode"><option value="static">Hasty</option><option value="sim">Sim</option></select>
+      <label style="margin-left:6px">Hilos <input id="matchSimThreads" type="number" value="1" min="1" max="16" style="width:3.2rem"></label>
       <label>Orden rack
         <select id="matchRackOrder">
           <option value="none">— Orden —</option>
@@ -949,7 +950,7 @@
         div.innerHTML = html;
       }
       // ==== Turn navigation (post-game) ====
-      let tnTurn = 0, tnEvents = 0, tnPos = null; let tnMoves = []; let tnMoveIdx = -1;
+      let tnTurn = 0, tnEvents = 0, tnPos = null; let tnMoves = []; let tnMoveIdx = -1; let tnStaticRank = new Map();
       async function initTurnNav(){ if(!matchId) return; try{ const ev = await (await fetch(`/matches/${matchId}/events`)).json(); tnEvents = Number(ev.count||0); tnTurn = tnEvents; await loadTurn(tnTurn); }catch(e){ console.warn('turnNav init failed', e); } }
       async function loadTurn(n){ if(!matchId) return; n = Math.max(0, Math.min(tnEvents, n)); const pos = await (await fetch(`/matches/${matchId}/position?turn=${n}`)).json();
         // Update board
@@ -995,6 +996,8 @@
             return { idx:i, score: Number(m.score||0), eq: eqNum, coord: `${coordES} ${arrow}`, word: String(m.word||''), leave: String(m.leave||''), lv: (typeof m.leaveVal==='number'? m.leaveVal : Number(m.leaveVal||0)) };
           });
           arr.sort((a,b)=> (b.eq - a.eq));
+          tnStaticRank.clear();
+          arr.forEach((r,rank)=>{ const key = `${r.coord}|${r.word}`; tnStaticRank.set(key, rank+1); });
           const rows = arr.slice(0, 25).map((r,i)=>{
             const lv = Number.isFinite(r.lv) ? r.lv.toFixed(2) : '';
             const eq = Number.isFinite(r.eq) ? r.eq.toFixed(2) : '';
@@ -1013,7 +1016,36 @@
           if (tnMoves.length > 0) { tnSelPos = 0; previewSelectedMove(); highlightSelectedRow(); }
         }catch(e){ console.error('genTurnMoves failed', e); }
       }
-      (function(){ const b=document.getElementById('tnGen'); if (b) b.onclick=genTurnMoves; })();
+      async function genTurnMovesSim(){
+        try{
+          const root = document.getElementById('turnMoves'); if (!root) return; root.style.display='block'; root.innerHTML='<em>Simulando…</em>';
+          if (!tnPos) { root.innerHTML = '<em>Sin posición</em>'; return; }
+          const threads = Math.max(1, parseInt(document.getElementById('matchSimThreads')?.value||'1',10)||1);
+          const qs = new URLSearchParams({ mode:'sim', iters:'1000', plies:'4', topK:'50', threads:String(threads) });
+          const r = await fetch(`/matches/${matchId}/moves?turn=${tnTurn}&${qs.toString()}`);
+          const j = await r.json(); if (j && j.error){ root.innerHTML = `<span style=\"color:#b91c1c\">${j.error}</span>`; return; }
+          const all = Array.isArray(j.all)? j.all : [];
+          tnMoves = all; tnMoveIdx = -1;
+          const arr = all.map((m,i)=>{
+            const wp = (typeof m.winPct==='number')? m.winPct : Number(m.winPct||0);
+            const coordES = coordsStr(m.row|0, m.col|0, m.dir||'H');
+            const arrow = (String(m.dir||'H').toUpperCase()==='V') ? '(↓)' : '(→)';
+            const key = `${coordES} ${arrow}|${String(m.word||'')}`;
+            const statRank = tnStaticRank.get(key) || '';
+            return { idx:i, win:wp, coord:`${coordES} ${arrow}`, word:String(m.word||''), leave:String(m.leave||''), eq:(typeof m.equity==='number'? m.equity: Number(m.equity||0)), statRank };
+          }).sort((a,b)=> b.win - a.win);
+          const rows = arr.slice(0, 25).map((r,i)=>{
+            const win = Number.isFinite(r.win)? r.win.toFixed(2) : '';
+            const eq = Number.isFinite(r.eq)? r.eq.toFixed(2) : '';
+            return `<tr data-idx=\"${r.idx}\"><td>${i+1}</td><td>${win}%</td><td>${eq}</td><td>${r.statRank||''}</td><td>${r.coord}</td><td>${r.word}</td><td>${r.leave}</td></tr>`;
+          }).join('');
+          root.innerHTML = `<div style=\"margin-bottom:4px;color:#374151;font-size:12px\">Jugadas (Sim): ${all.length}</div>`+
+            `<table id=\"tnTable\" style=\"border-collapse:collapse;width:100%;font-size:12px\"><thead><tr style=\"background:#f8fafc\"><th>#</th><th>Win%</th><th>Equity</th><th>Rk(Eq)</th><th>Coord</th><th>Palabra</th><th>Leave</th></tr></thead><tbody>${rows||''}</tbody></table>`;
+          try { const tb=document.getElementById('tnTable'); if(tb){ tb.querySelectorAll('tbody tr').forEach((tr,pos)=>{ tr.onclick=()=>{ tnSelPos = pos; previewSelectedMove(); highlightSelectedRow(); }; }); } } catch(_){ }
+          if (all.length>0){ tnSelPos=0; previewSelectedMove(); highlightSelectedRow(); }
+        }catch(e){ console.error('genTurnMovesSim failed', e); }
+      }
+      (function(){ const b=document.getElementById('tnGen'); if (b) b.onclick=genTurnMovesSim; })();
       function previewSelectedMove(){
         if (!Array.isArray(tnMoves) || tnSelPos == null) { previewPlacements={}; lastHighlight=null; renderMatchBoard(); return; }
         const tb = document.getElementById('tnTable');
@@ -1186,7 +1218,17 @@
         }
         return out;
       }
-      async function doAIMove(){ if(!matchId) return; const mode = aiMode(); const payload = (mode==='sim')? {mode, sim:{iters:300, plies:2, topK:15}} : {mode:'static'}; const r = await fetch(`/matches/${matchId}/ai_move`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)}); const j = await r.json(); if(j.error){ alert(j.error); return; } await refreshMatch(); await refreshHistory(); }
+      async function doAIMove(){
+        if(!matchId) return;
+        const mode = aiMode();
+        const threads = Math.max(1, parseInt(document.getElementById('matchSimThreads')?.value||'1',10)||1);
+        const payload = (mode==='sim') ? { mode, sim:{ iters:1000, plies:4, topK:50, threads } } : { mode:'static' };
+        const r = await fetch(`/matches/${matchId}/ai_move`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+        const j = await r.json(); if(j.error){ alert(j.error); return; }
+        await refreshMatch(); await refreshHistory();
+      }
+      // Default threads to hardware concurrency if available
+      (function(){ try{ const t = (navigator.hardwareConcurrency||1); const el=document.getElementById('matchSimThreads'); if (el && (!el.value || el.value==='1')) el.value=String(Math.min(8, Math.max(1, t))); }catch(_){ } })();
       // Buttons wiring
       window.addEventListener('load', ()=>{
         document.getElementById('matchCreate').onclick=()=>createMatch(false);

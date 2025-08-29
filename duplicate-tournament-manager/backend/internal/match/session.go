@@ -269,7 +269,7 @@ func (s *Session) Pass() error {
 }
 
 // AIMove makes an AI move using either static or simulation mode.
-func (s *Session) AIMove(mode AIMode, simIters, simPlies, topK int) (*move.Move, error) {
+func (s *Session) AIMove(mode AIMode, simIters, simPlies, topK, simThreads int) (*move.Move, error) {
     s.mu.Lock(); defer s.mu.Unlock()
     pi := s.Game.PlayerOnTurn(); p := int(pi)
     rack := s.Game.RackFor(pi)
@@ -283,16 +283,20 @@ func (s *Session) AIMove(mode AIMode, simIters, simPlies, topK int) (*move.Move,
         for _, pm := range plays[1:] { if pm.Score() > best.Score() { best = pm } }
     } else {
         // Simmer
-        if topK <= 0 || topK > len(plays) { topK = min(len(plays), 20) }
+        if topK <= 0 || topK > len(plays) { topK = min(len(plays), 50) }
         cand := plays[:topK]
         // Ensure csc exists
         if s.csc == nil { c, _ := equity.NewCombinedStaticCalculator(s.KwgName, s.CFG, equity.LeavesFilename, equity.PEGAdjustmentFilename); s.csc = c }
         simmer := &montecarlo.Simmer{}
         simmer.Init(s.Game, []equity.EquityCalculator{s.csc}, s.csc, s.CFG)
-        simmer.SetThreads(1)
-        if simPlies <= 0 { simPlies = 2 }
+        if simThreads <= 0 { simThreads = 1 }
+        simmer.SetThreads(simThreads)
+        // Strength bump: default to plies=4 if not provided
+        if simPlies <= 0 { simPlies = 4 }
+        // Use confidence-based stopping to avoid wasting work when converged
+        simmer.SetStoppingCondition(montecarlo.Stop99)
         if err := simmer.PrepareSim(simPlies, cand); err != nil { return nil, err }
-        if simIters <= 0 { simIters = 300 }
+        if simIters <= 0 { simIters = 1000 }
         simmer.SimSingleThread(simIters, simPlies)
         sp := simmer.WinningPlay()
         if sp == nil { return nil, errors.New("no sim winner") }

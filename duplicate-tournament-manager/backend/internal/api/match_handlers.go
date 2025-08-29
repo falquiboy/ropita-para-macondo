@@ -14,6 +14,7 @@ import (
     aitp "github.com/domino14/macondo/ai/turnplayer"
     "github.com/domino14/macondo/equity"
     "github.com/domino14/macondo/move"
+    "github.com/domino14/macondo/montecarlo"
 )
 
 type MatchHandlers struct{
@@ -104,13 +105,13 @@ func (m *MatchHandlers) AIMove(w http.ResponseWriter, r *http.Request){
     id := m.pathID(r.URL.Path)
     m.mu.RLock(); s := m.byID[id]; m.mu.RUnlock()
     if s==nil { writeJSON(w,http.StatusNotFound, map[string]string{"error":"not found"}); return }
-    var in struct{ Mode string `json:"mode"`; Sim *struct{ Iters,Plies,TopK int } `json:"sim"` }
+    var in struct{ Mode string `json:"mode"`; Sim *struct{ Iters,Plies,TopK,Threads int } `json:"sim"` }
     _ = json.NewDecoder(r.Body).Decode(&in)
     mode := match.AIStatic
     if strings.EqualFold(in.Mode, "sim") { mode = match.AISim }
-    iters, plies, topk := 0,0,0
-    if in.Sim!=nil { iters=in.Sim.Iters; plies=in.Sim.Plies; topk=in.Sim.TopK }
-    _, err := s.AIMove(mode, iters, plies, topk)
+    iters, plies, topk, threads := 0,0,0,0
+    if in.Sim!=nil { iters=in.Sim.Iters; plies=in.Sim.Plies; topk=in.Sim.TopK; threads=in.Sim.Threads }
+    _, err := s.AIMove(mode, iters, plies, topk, threads)
     if err != nil { writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()}); return }
     writeJSON(w, http.StatusOK, m.serialize(s))
 }
@@ -316,6 +317,12 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request){
     if t := r.URL.Query().Get("turn"); t != "" {
         if n, err := strconv.Atoi(t); err == nil && n >= 0 { turn = n }
     }
+    mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode")))
+    iters, plies, topk, threads := 300, 2, 20, 1
+    if v := r.URL.Query().Get("iters"); v != "" { if n,err:=strconv.Atoi(v); err==nil && n>0 { iters=n } }
+    if v := r.URL.Query().Get("plies"); v != "" { if n,err:=strconv.Atoi(v); err==nil && n>0 { plies=n } }
+    if v := r.URL.Query().Get("topK"); v != "" { if n,err:=strconv.Atoi(v); err==nil && n>0 { topk=n } }
+    if v := r.URL.Query().Get("threads"); v != "" { if n,err:=strconv.Atoi(v); err==nil && n>0 { threads=n } }
     hist := s.Game.History()
     rules := s.Game.Rules()
     ng, err := game.NewFromHistory(hist, rules, 0)
@@ -328,7 +335,9 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request){
     sp, _ := aitp.NewAIStaticTurnPlayerFromGame(ng, s.CFG, []equity.EquityCalculator{csc})
     mg := sp.MoveGenerator()
     rack := ng.RackFor(ng.PlayerOnTurn())
-    mg.GenAll(rack, false)
+    // Allow exchanges as long as there is at least 1 tile in the bag
+    exchAllowed := ng.Bag().TilesRemaining() >= 1
+    mg.GenAll(rack, exchAllowed)
     // Collect plays
     type hasPlays interface{ Plays() []*move.Move }
     plays := []*move.Move{}
@@ -342,12 +351,28 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request){
         raw := strings.ReplaceAll(pm.TilesString(), ".", ""); word := normalizeWordToBrackets(raw)
         return Move{ Word: word, Row: r, Col: c, Dir: dir, Score: pm.Score(), Leave: pm.LeaveString(), LeaveVal: lv, Equity: eq }
     }
-    best := -1
-    for _, pm := range plays {
-        if pm == nil || pm.Action() != move.MoveTypePlay { continue }
-        mv := toMove(pm)
-        res.All = append(res.All, mv)
-        if mv.Score > best { res.Best = mv; best = mv.Score; res.Ties = res.Ties[:0] } else if mv.Score == best { res.Ties = append(res.Ties, mv) }
+    if mode == "sim" {
+        if topk > len(plays) { topk = len(plays) }
+        cand := plays[:topk]
+        // Ensure csc
+        if csc == nil { csc, _ = equity.NewCombinedStaticCalculator(s.Lexicon, s.CFG, "", equity.PEGAdjustmentFilename) }
+        simmer := &montecarlo.Simmer{}
+        simmer.Init(ng, []equity.EquityCalculator{csc}, csc, s.CFG)
+        if threads <= 0 { threads = 1 }
+        simmer.SetThreads(threads)
+        if err := simmer.PrepareSim(plies, cand); err != nil { writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()}); return }
+        simmer.SimSingleThread(iters, plies)
+        sp := simmer.PlaysByWinProb().PlaysNoLock()
+        for _, simPlay := range sp {
+            pm := simPlay.Move(); if pm == nil { continue }
+            mv := toMove(pm)
+            mv.WinPct = 100.0 * simPlay.WinProb()
+            res.All = append(res.All, mv)
+        }
+        if len(res.All) > 0 { res.Best = res.All[0] }
+        writeJSON(w, http.StatusOK, res); return
     }
+    // Static equity path
+    for _, pm := range plays { res.All = append(res.All, toMove(pm)) }
     writeJSON(w, http.StatusOK, res)
 }

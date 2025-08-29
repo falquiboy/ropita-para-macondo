@@ -450,7 +450,10 @@ FALLBACK_DONE:
     }
     // Attach game so equity calculators can access bag/racks
     mg.SetGame(g)
-    plays := mg.GenAll(rack, false)
+    // Enable exchange generation when there are enough tiles in the bag
+    // Allow exchanges as long as there is at least 1 tile in the bag
+    exchAllowed := g.Bag().TilesRemaining() >= 1
+    plays := mg.GenAll(rack, exchAllowed)
 
     // Helper: convert move to API shape
     toMove := func(pm *move.Move) dapi.Move {
@@ -492,6 +495,10 @@ FALLBACK_DONE:
             if req.Sim.TopK > 0 { topK = req.Sim.TopK }
         }
         if topK > len(plays) { topK = len(plays) }
+        // Enable exchanges when bag allows
+        // Allow exchanges as long as there is at least 1 tile in the bag
+        exchAllowed := g.Bag().TilesRemaining() >= 1
+        plays = mg.GenAll(rack, exchAllowed)
         cand := plays[:topK]
         // Optional KWG span validation
         if validateSpan {
