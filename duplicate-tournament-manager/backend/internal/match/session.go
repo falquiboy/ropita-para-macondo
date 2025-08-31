@@ -273,7 +273,9 @@ func (s *Session) AIMove(mode AIMode, simIters, simPlies, topK, simThreads int) 
     s.mu.Lock(); defer s.mu.Unlock()
     pi := s.Game.PlayerOnTurn(); p := int(pi)
     rack := s.Game.RackFor(pi)
-    s.sp.MoveGenerator().GenAll(rack, true)
+    // Allow exchange only if there are tiles left in the bag
+    exchAllowed := s.Game.Bag().TilesRemaining() >= 1
+    s.sp.MoveGenerator().GenAll(rack, exchAllowed)
     plays := s.sp.MoveGenerator().(*movegen.GordonGenerator).Plays()
     if len(plays) == 0 { return nil, errors.New("no plays") }
     var best *move.Move
@@ -285,6 +287,30 @@ func (s *Session) AIMove(mode AIMode, simIters, simPlies, topK, simThreads int) 
         // Simmer
         if topK <= 0 || topK > len(plays) { topK = min(len(plays), 50) }
         cand := plays[:topK]
+        // Ensure we consider exchange (and pass) even if they didn't make topK
+        if exchAllowed {
+            var bestEx *move.Move
+            for _, pm := range plays {
+                if pm == nil { continue }
+                if pm.Action() == move.MoveTypeExchange { bestEx = pm; break }
+            }
+            if bestEx != nil {
+                // Append if not already present
+                seen := false
+                for _, pm := range cand { if pm == bestEx { seen = true; break } }
+                if !seen { cand = append(cand, bestEx) }
+            }
+        }
+        // Always consider pass as a safety candidate in sim if generated
+        var passMv *move.Move
+        for _, pm := range plays {
+            if pm != nil && pm.Action() == move.MoveTypePass { passMv = pm; break }
+        }
+        if passMv != nil {
+            seen := false
+            for _, pm := range cand { if pm == passMv { seen = true; break } }
+            if !seen { cand = append(cand, passMv) }
+        }
         // Ensure csc exists
         if s.csc == nil { c, _ := equity.NewCombinedStaticCalculator(s.KwgName, s.CFG, equity.LeavesFilename, equity.PEGAdjustmentFilename); s.csc = c }
         simmer := &montecarlo.Simmer{}
