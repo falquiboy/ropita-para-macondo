@@ -19,10 +19,11 @@
       }
       /* Bonus tags */
       .cell .bonus { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 700; color: #333; opacity: 0.7; }
-      .cell.tw { background: #fdd; }
-      .cell.dw { background: #fce7f3; }
-      .cell.tl { background: #dbeafe; }
-      .cell.dl { background: #cffafe; }
+      /* Slightly more saturated bonus colors */
+      .cell.tw { background: #fca5a5; }
+      .cell.dw { background: #fbcfe8; }
+      .cell.tl { background: #bfdbfe; }
+      .cell.dl { background: #a5f3fc; }
       .cell.center .star { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #f59e0b; font-size: 14px; opacity: 0.9; }
       /* Occupied cell highlight (cream background) */
       .cell.occ { background: #fff4d6; border-color: #d2b48c; }
@@ -79,6 +80,7 @@
       .badge-final { position:absolute; top:-10px; right:-10px; background:#111827; color:#fff; font-size:10px; padding:2px 6px; border-radius:10px; opacity:.9; }
       /* Post-mortem moves table selection */
       #tnTable tbody tr.sel { background:#eef6ff; }
+      #tnTable tbody tr.played { background:#f3e8ff; }
       #tnTable tbody tr:hover { background:#f3f4f6; cursor:pointer; }
       /* Preview highlight on empty cells */
       .cell.last { background:#e6f2ff; border-color:#60a5fa; }
@@ -152,7 +154,7 @@
           <span id="tnMeta">Turno —/—</span>
           <button id="tnNext" title="Adelante">▶</button>
           <button id="tnEnd" title="Fin">⏭</button>
-          <button id="tnGen" title="Generar jugadas (estático)" style="margin-left:8px">Generar</button>
+          <button id="tnGen" title="Simular jugadas (Monte Carlo)" style="margin-left:8px">Simular</button>
         </div>
         <div id="tnRacks" style="display:none; margin-top:4px; font-size:12px; color:#374151">Atriles: Tú [ <span id="tnRackYou">—</span> ] · Bot [ <span id="tnRackBot">—</span> ]</div>
         <div id="turnMoves" style="display:none; margin-top:6px"></div>
@@ -951,7 +953,17 @@
       }
       // ==== Turn navigation (post-game) ====
       let tnTurn = 0, tnEvents = 0, tnPos = null; let tnMoves = []; let tnMoveIdx = -1; let tnStaticRank = new Map();
-      async function initTurnNav(){ if(!matchId) return; try{ const ev = await (await fetch(`/matches/${matchId}/events`)).json(); tnEvents = Number(ev.count||0); tnTurn = tnEvents; await loadTurn(tnTurn); }catch(e){ console.warn('turnNav init failed', e); } }
+      let tnEventList = []; // cached events for the match (for highlighting the played move)
+      async function initTurnNav(){
+        if(!matchId) return;
+        try{
+          const ev = await (await fetch(`/matches/${matchId}/events`)).json();
+          tnEvents = Number(ev.count||0);
+          tnEventList = Array.isArray(ev.events) ? ev.events : [];
+          tnTurn = tnEvents;
+          await loadTurn(tnTurn);
+        }catch(e){ console.warn('turnNav init failed', e); }
+      }
       async function loadTurn(n){ if(!matchId) return; n = Math.max(0, Math.min(tnEvents, n)); const pos = await (await fetch(`/matches/${matchId}/position?turn=${n}`)).json();
         // Update board
         matchBoardState = [].concat(...(pos.board_rows||[]).map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225);
@@ -963,15 +975,15 @@
           rebuildRackCounts();
           setMatchRackText();
         } catch(_) { /* ignore */ }
-        lastHighlight = null;
+        // Reset any previews/highlights: show the initial board state of this turn
+        previewPlacements = {}; lastHighlight = null; tnSelPos = -1;
         renderMatchBoard();
         tnPos = pos;
         const meta = document.getElementById('tnMeta'); if (meta){ const who = (pos.onturn===0? 'Tú':'Bot'); meta.textContent = `Turno ${pos.turn}/${pos.events} · En turno: ${who} · Bolsa: ${pos.bag}`; }
         const ry = document.getElementById('tnRackYou'); if (ry) ry.textContent = String(pos.rack_you||'');
         const rb = document.getElementById('tnRackBot'); if (rb) rb.textContent = String(pos.rack_bot||'');
         tnTurn = pos.turn;
-        await genTurnMoves();
-        // Auto-generate moves for this turn
+        // Generate moves list but do NOT auto-preview; user starts with ArrowDown
         await genTurnMoves();
       }
       (function(){ const s=document.getElementById('tnStart'); if(s) s.onclick=()=>loadTurn(0); const p=document.getElementById('tnPrev'); if(p) p.onclick=()=>loadTurn(tnTurn-1); const n=document.getElementById('tnNext'); if(n) n.onclick=()=>loadTurn(tnTurn+1); const e=document.getElementById('tnEnd'); if(e) e.onclick=()=>loadTurn(tnEvents); })();
@@ -989,36 +1001,104 @@
           // Render compact table for analysis (Score, Equity, Coord ES, Word, Leave) sorted by Equity desc
           const all = Array.isArray(j.all)? j.all : [];
           tnMoves = all; tnMoveIdx = -1;
+          // Helper to build word with anchor tokens using current board state
+          // mv: {row,col,dir,word}
+          // Returns placedWord + (anchor) when anchor exists, else just placedWord
+          function wordWithAnchor(mv){
+            try{
+              const dir = String(mv.dir||'H').toUpperCase();
+              let r = (mv.row|0), c = (mv.col|0);
+              const dr = (dir==='V')?1:0, dc=(dir==='V')?0:1;
+              const toks = tokensFromBracketStr(String(mv.word||''));
+              // Clone board state and overlay placement
+              const board = matchBoardState.slice();
+              const original = matchBoardState.slice();
+              let ti = 0;
+              let lastPlacedIdx = r*15+c;
+              for (let step=0; step<40; step++){
+                if (r<0||r>=15||c<0||c>=15) break;
+                const pos = r*15+c;
+                if (!String(board[pos]||'').trim()){
+                  if (ti < toks.length){ board[pos] = toks[ti++]; lastPlacedIdx = pos; } else { break; }
+                }
+                if (ti >= toks.length) { break; }
+                r += dr; c += dc;
+              }
+              // Find span bounds in new board
+              // Compute start from initial cell, extend backwards
+              let sr = (mv.row|0), sc = (mv.col|0);
+              let er = Math.floor(lastPlacedIdx/15), ec = (lastPlacedIdx%15);
+              // move start backwards while previous cell is non-empty
+              while(true){
+                const pr = sr - dr, pc = sc - dc;
+                if (pr<0||pr>=15||pc<0||pc>=15) break;
+                if (!String(board[pr*15+pc]||'').trim()) break;
+                sr = pr; sc = pc;
+              }
+              // move end forwards while next cell is non-empty
+              while(true){
+                const nr = er + dr, nc = ec + dc;
+                if (nr<0||nr>=15||nc<0||nc>=15) break;
+                if (!String(board[nr*15+nc]||'').trim()) break;
+                er = nr; ec = nc;
+              }
+              const spanToks = [];
+              const anchorToks = [];
+              for (let rr=sr, cc=sc; ; rr+=dr, cc+=dc){
+                const pos = rr*15+cc;
+                const tk = board[pos] || ' ';
+                if (String(tk||'').trim()){ spanToks.push(tk); if (String(original[pos]||'').trim()) anchorToks.push(original[pos]); }
+                if (rr===er && cc===ec) break;
+              }
+              const placed = tokensFromBracketStr(String(mv.word||''));
+              const placedStr = placed.join('');
+              const anchorStr = anchorToks.join('');
+              return anchorStr ? `${placedStr}(${anchorStr})` : placedStr;
+            }catch(_){ return String(mv.word||''); }
+          }
           const arr = all.map((m,i)=>{
             const eqNum = (typeof m.equity==='number') ? m.equity : Number(m.equity||0);
             const coordES = coordsStr(m.row|0, m.col|0, m.dir||'H');
             const arrow = (String(m.dir||'H').toUpperCase()==='V') ? '(↓)' : '(→)';
-            return { idx:i, score: Number(m.score||0), eq: eqNum, coord: `${coordES} ${arrow}`, word: String(m.word||''), leave: String(m.leave||''), lv: (typeof m.leaveVal==='number'? m.leaveVal : Number(m.leaveVal||0)) };
+            const dispWord = wordWithAnchor(m);
+            return { idx:i, score: Number(m.score||0), eq: eqNum, coord: `${coordES} ${arrow}`, word: dispWord, leave: String(m.leave||''), lv: (typeof m.leaveVal==='number'? m.leaveVal : Number(m.leaveVal||0)) };
           });
           arr.sort((a,b)=> (b.eq - a.eq));
           tnStaticRank.clear();
           arr.forEach((r,rank)=>{ const key = `${r.coord}|${r.word}`; tnStaticRank.set(key, rank+1); });
-          const rows = arr.slice(0, 25).map((r,i)=>{
+          // Determine the actually played move at this turn (next event, if any)
+          let playedKey = null;
+          try {
+            const ev = (Array.isArray(tnEventList) && tnTurn < tnEventList.length) ? tnEventList[tnTurn] : null;
+            if (ev && String(ev.type||'').toUpperCase()==='TILE_PLACEMENT_MOVE'){
+              const coordES = coordsStr(ev.row|0, ev.col|0, ev.dir||'H');
+              const arrow = (String(ev.dir||'H').toUpperCase()==='V') ? '(↓)' : '(→)';
+              playedKey = `${coordES} ${arrow}`;
+            }
+          }catch(_){ playedKey = null; }
+          const rows = arr.slice(0, 50).map((r,i)=>{
             const lv = Number.isFinite(r.lv) ? r.lv.toFixed(2) : '';
             const eq = Number.isFinite(r.eq) ? r.eq.toFixed(2) : '';
             const leave = r.leave || '—';
-            return `<tr data-idx="${r.idx}"><td>${i+1}</td><td>${r.score|0}</td><td>${eq}</td><td>${r.coord}</td><td>${r.word}</td><td>${leave}</td><td>${lv}</td></tr>`;
+            const playedCls = (playedKey && r.coord===playedKey) ? ' class="played"' : '';
+            return `<tr data-idx="${r.idx}"${playedCls}><td>${i+1}</td><td>${r.score|0}</td><td>${eq}</td><td>${r.coord}</td><td>${r.word}</td><td>${leave}</td><td>${lv}</td></tr>`;
           }).join('');
           const warn = (!all.length ? `<div style="margin-top:4px;color:#b91c1c">Sin jugadas. Si VALIDATE_SPAN está activo, puede filtrar todo en posiciones con palabras no españolas en el tablero.</div>` : '');
           root.innerHTML = `<div style="margin-bottom:4px;color:#374151;font-size:12px">Jugadas: ${all.length}</div>`+
             `<table id="tnTable" style="border-collapse:collapse;width:100%;font-size:12px"><thead><tr style="background:#f8fafc"><th>#</th><th>Score</th><th>Equity</th><th>Coord</th><th>Palabra</th><th>Leave</th><th>Leave Val</th></tr></thead><tbody>${rows||''}</tbody></table>` + warn;
-          // Click to preview selection (position-based within sorted list)
+          // Click to preview selection (position-based within sorted list); do not auto-preview
           try {
             const tb = document.getElementById('tnTable');
             if (tb){ tb.querySelectorAll('tbody tr').forEach((tr,pos)=>{ tr.onclick=()=>{ tnSelPos = pos; previewSelectedMove(); highlightSelectedRow(); }; }); }
           } catch(_) { }
-          // Auto-select first move
-          if (tnMoves.length > 0) { tnSelPos = 0; previewSelectedMove(); highlightSelectedRow(); }
+          // No auto-select: keep board as initial state until user presses ArrowDown
         }catch(e){ console.error('genTurnMoves failed', e); }
       }
       async function genTurnMovesSim(){
         try{
           const root = document.getElementById('turnMoves'); if (!root) return; root.style.display='block'; root.innerHTML='<em>Simulando…</em>';
+          // Ensure the board is on the initial state of this turn (clear previews) before sim
+          previewPlacements = {}; lastHighlight = null; renderMatchBoard();
           if (!tnPos) { root.innerHTML = '<em>Sin posición</em>'; return; }
           const threads = Math.max(1, parseInt(document.getElementById('matchSimThreads')?.value||'1',10)||1);
           const qs = new URLSearchParams({ mode:'sim', iters:'1000', plies:'4', topK:'50', threads:String(threads) });
@@ -1032,17 +1112,32 @@
             const arrow = (String(m.dir||'H').toUpperCase()==='V') ? '(↓)' : '(→)';
             const key = `${coordES} ${arrow}|${String(m.word||'')}`;
             const statRank = tnStaticRank.get(key) || '';
-            return { idx:i, win:wp, coord:`${coordES} ${arrow}`, word:String(m.word||''), leave:String(m.leave||''), eq:(typeof m.equity==='number'? m.equity: Number(m.equity||0)), statRank };
+            const eq = (typeof m.equity==='number'? m.equity : Number(m.equity||0));
+            const sc = (typeof m.score==='number'? m.score : Number(m.score||0));
+            const dispWord = wordWithAnchor(m);
+            return { idx:i, win:wp, coord:`${coordES} ${arrow}`, word:dispWord, leave:String(m.leave||''), eq:eq, score: sc, statRank };
           }).sort((a,b)=> b.win - a.win);
-          const rows = arr.slice(0, 25).map((r,i)=>{
+          // Determine the actually played move key to highlight
+          let playedKey = null;
+          try {
+            const ev = (Array.isArray(tnEventList) && tnTurn < tnEventList.length) ? tnEventList[tnTurn] : null;
+            if (ev && String(ev.type||'').toUpperCase()==='TILE_PLACEMENT_MOVE'){
+              const coordES = coordsStr(ev.row|0, ev.col|0, ev.dir||'H');
+              const arrow = (String(ev.dir||'H').toUpperCase()==='V') ? '(↓)' : '(→)';
+              playedKey = `${coordES} ${arrow}`;
+            }
+          }catch(_){ playedKey = null; }
+          const rows = arr.slice(0, 50).map((r,i)=>{
             const win = Number.isFinite(r.win)? r.win.toFixed(2) : '';
             const eq = Number.isFinite(r.eq)? r.eq.toFixed(2) : '';
-            return `<tr data-idx=\"${r.idx}\"><td>${i+1}</td><td>${win}%</td><td>${eq}</td><td>${r.statRank||''}</td><td>${r.coord}</td><td>${r.word}</td><td>${r.leave}</td></tr>`;
+            const playedCls = (playedKey && r.coord===playedKey) ? ' class=\"played\"' : '';
+            const sc = Number.isFinite(r.score)? (r.score|0) : '';
+            return `<tr data-idx=\"${r.idx}\"${playedCls}><td>${i+1}</td><td>${sc}</td><td>${win}%</td><td>${eq}</td><td>${r.statRank||''}</td><td>${r.coord}</td><td>${r.word}</td><td>${r.leave}</td></tr>`;
           }).join('');
           root.innerHTML = `<div style=\"margin-bottom:4px;color:#374151;font-size:12px\">Jugadas (Sim): ${all.length}</div>`+
-            `<table id=\"tnTable\" style=\"border-collapse:collapse;width:100%;font-size:12px\"><thead><tr style=\"background:#f8fafc\"><th>#</th><th>Win%</th><th>Equity</th><th>Rk(Eq)</th><th>Coord</th><th>Palabra</th><th>Leave</th></tr></thead><tbody>${rows||''}</tbody></table>`;
+            `<table id=\"tnTable\" style=\"border-collapse:collapse;width:100%;font-size:12px\"><thead><tr style=\"background:#f8fafc\"><th>#</th><th>Score</th><th>Win%</th><th>Equity</th><th>Rk(Eq)</th><th>Coord</th><th>Palabra</th><th>Leave</th></tr></thead><tbody>${rows||''}</tbody></table>`;
           try { const tb=document.getElementById('tnTable'); if(tb){ tb.querySelectorAll('tbody tr').forEach((tr,pos)=>{ tr.onclick=()=>{ tnSelPos = pos; previewSelectedMove(); highlightSelectedRow(); }; }); } } catch(_){ }
-          if (all.length>0){ tnSelPos=0; previewSelectedMove(); highlightSelectedRow(); }
+          // No auto-select after sim either; keep initial state previewless
         }catch(e){ console.error('genTurnMovesSim failed', e); }
       }
       (function(){ const b=document.getElementById('tnGen'); if (b) b.onclick=genTurnMovesSim; })();
@@ -1099,10 +1194,20 @@
         if (isEditing) return;
         if (e.key === 'ArrowDown'){
           const tb = document.getElementById('tnTable'); const total = (tb? tb.querySelectorAll('tbody tr').length : 0);
-          if (total>0){ tnSelPos = Math.min(total-1, (tnSelPos<0?0:tnSelPos+1)); previewSelectedMove(); highlightSelectedRow(); e.preventDefault(); }
+          if (total>0){
+            // Start navigation from first move if not started yet
+            if (tnSelPos < 0) tnSelPos = 0; else tnSelPos = Math.min(total-1, tnSelPos+1);
+            previewSelectedMove(); highlightSelectedRow(); e.preventDefault();
+          }
         } else if (e.key === 'ArrowUp'){
           const tb = document.getElementById('tnTable'); const total = (tb? tb.querySelectorAll('tbody tr').length : 0);
           if (total>0){ tnSelPos = Math.max(0, (tnSelPos<0?0:tnSelPos-1)); previewSelectedMove(); highlightSelectedRow(); e.preventDefault(); }
+        } else if (e.key === 'ArrowRight'){
+          // Next turn
+          loadTurn(tnTurn+1); e.preventDefault();
+        } else if (e.key === 'ArrowLeft'){
+          // Previous turn
+          loadTurn(tnTurn-1); e.preventDefault();
         }
       });
       // Grouped renderer: both players in same row; per player show Coord, Word, Pts, Cum
@@ -1227,8 +1332,8 @@
         const j = await r.json(); if(j.error){ alert(j.error); return; }
         await refreshMatch(); await refreshHistory();
       }
-      // Default threads to hardware concurrency if available
-      (function(){ try{ const t = (navigator.hardwareConcurrency||1); const el=document.getElementById('matchSimThreads'); if (el && (!el.value || el.value==='1')) el.value=String(Math.min(8, Math.max(1, t))); }catch(_){ } })();
+      // Default threads to (hardware - 1) to keep UI responsive
+      (function(){ try{ const t = (navigator.hardwareConcurrency||1); const el=document.getElementById('matchSimThreads'); if (el && (!el.value || el.value==='1')) el.value=String(Math.max(1, (t|0)-1)); }catch(_){ } })();
       // Buttons wiring
       window.addEventListener('load', ()=>{
         document.getElementById('matchCreate').onclick=()=>createMatch(false);
