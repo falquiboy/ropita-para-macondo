@@ -354,6 +354,29 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request){
     if mode == "sim" {
         if topk > len(plays) { topk = len(plays) }
         cand := plays[:topk]
+        // Ensure exchange/pass are considered even if not in topK
+        // Allow exchange only if bag has at least 1 tile
+        exchAllowed := ng.Bag().TilesRemaining() >= 1
+        if exchAllowed {
+            var bestEx *move.Move
+            for _, pm := range plays {
+                if pm != nil && pm.Action() == move.MoveTypeExchange { bestEx = pm; break }
+            }
+            if bestEx != nil {
+                seen := false
+                for _, pm := range cand { if pm == bestEx { seen = true; break } }
+                if !seen { cand = append(cand, bestEx) }
+            }
+        }
+        var passMv *move.Move
+        for _, pm := range plays {
+            if pm != nil && pm.Action() == move.MoveTypePass { passMv = pm; break }
+        }
+        if passMv != nil {
+            seen := false
+            for _, pm := range cand { if pm == passMv { seen = true; break } }
+            if !seen { cand = append(cand, passMv) }
+        }
         // Ensure csc
         if csc == nil { csc, _ = equity.NewCombinedStaticCalculator(s.Lexicon, s.CFG, "", equity.PEGAdjustmentFilename) }
         simmer := &montecarlo.Simmer{}
