@@ -147,6 +147,8 @@
           <div class="grid" id="matchBoard"></div>
           <div id="boardBadge" class="badge-final" style="display:none">Finalizada</div>
         </div>
+        <!-- Rack placed just below the board -->
+        <div class="rack" style="margin-top:6px">Rack: <div id="matchRack" class="rack" style="margin-left:6px"></div></div>
         <div style="margin-top:4px;font-size:12px;color:#6b7280" title="Barra espaciadora: cambia dirección de tipeo">Inicio: <span id="matchCoordLabel">—</span></div>
         <div id="turnNav" style="display:none; margin-top:6px; font-size:12px; display:flex; align-items:center; gap:6px">
           <button id="tnStart" title="Inicio">⏮</button>
@@ -166,8 +168,7 @@
       </div>
     </div>
     <div class="row">
-      <div class="rack">Rack: <div id="matchRack" class="rack" style="margin-left:6px"></div></div>
-      <div style="margin-left:1rem">Score: <span id="matchScore"></span> | Bolsa: <span id="matchBag"></span> | No vistas: <span id="matchUnseen"></span> <span id="matchPhase" style="margin-left:8px;color:#2563eb;font-weight:600"></span></div>
+      <div style="margin-left:0">Score: <span id="matchScore"></span> | Bolsa: <span id="matchBag"></span> | No vistas: <span id="matchUnseen"></span> <span id="matchPhase" style="margin-left:8px;color:#2563eb;font-weight:600"></span></div>
     </div>
 
     <div id="finalModal" class="final-modal">
@@ -686,6 +687,10 @@
           if(s[i]==='['){ const j=s.indexOf(']', i+1); if(j>i){ out.push(s.slice(i,j+1)); i=j+1; continue; } }
           out.push(s[i]); i++; }
         return out;
+      }
+      function tokensToPlain(s){
+        const t = tokensFromBracketStr(String(s||''));
+        return t.map(x=> (x && x.startsWith('[') && x.endsWith(']')) ? x.slice(1,-1) : x).join('');
       }
       // Build display word with anchor in correct position using current board state
       function wordWithAnchor(mv){
