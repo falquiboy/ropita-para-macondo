@@ -687,6 +687,55 @@
           out.push(s[i]); i++; }
         return out;
       }
+      // Build display word with anchor for a move using current board state
+      function wordWithAnchor(mv){
+        try{
+          const dir = String(mv.dir||'H').toUpperCase();
+          let r = (mv.row|0), c = (mv.col|0);
+          const dr = (dir==='V')?1:0, dc=(dir==='V')?0:1;
+          const toks = tokensFromBracketStr(String(mv.word||''));
+          // Clone board state and overlay placement
+          const board = matchBoardState.slice();
+          const original = matchBoardState.slice();
+          let ti = 0;
+          let lastPlacedIdx = r*15+c;
+          for (let step=0; step<40; step++){
+            if (r<0||r>=15||c<0||c>=15) break;
+            const pos = r*15+c;
+            if (!String(board[pos]||'').trim()){
+              if (ti < toks.length){ board[pos] = toks[ti++]; lastPlacedIdx = pos; } else { break; }
+            }
+            if (ti >= toks.length) { break; }
+            r += dr; c += dc;
+          }
+          // Find span bounds in new board
+          let sr = (mv.row|0), sc = (mv.col|0);
+          let er = Math.floor(lastPlacedIdx/15), ec = (lastPlacedIdx%15);
+          while(true){
+            const pr = sr - dr, pc = sc - dc;
+            if (pr<0||pr>=15||pc<0||pc>=15) break;
+            if (!String(board[pr*15+pc]||'').trim()) break;
+            sr = pr; sc = pc;
+          }
+          while(true){
+            const nr = er + dr, nc = ec + dc;
+            if (nr<0||nr>=15||nc<0||nc>=15) break;
+            if (!String(board[nr*15+nc]||'').trim()) break;
+            er = nr; ec = nc;
+          }
+          const anchorToks = [];
+          for (let rr=sr, cc=sc; ; rr+=dr, cc+=dc){
+            const pos = rr*15+cc;
+            const tk = board[pos] || ' ';
+            if (String(tk||'').trim() && String(original[pos]||'').trim()) anchorToks.push(original[pos]);
+            if (rr===er && cc===ec) break;
+          }
+          const placed = tokensFromBracketStr(String(mv.word||''));
+          const placedStr = placed.join('');
+          const anchorStr = anchorToks.join('');
+          return anchorStr ? `${placedStr}(${anchorStr})` : placedStr;
+        }catch(_){ return String(mv.word||''); }
+      }
       function rebuildRackCounts(){ rackCounts={}; for(const t of rackTokensArr){ rackCounts[t]=(rackCounts[t]||0)+1; } }
       function shuffleRack(){ for(let i=rackTokensArr.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [rackTokensArr[i],rackTokensArr[j]]=[rackTokensArr[j],rackTokensArr[i]]; } rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText(); }
       function isPlacedBlankToken(tk){
@@ -1004,58 +1053,7 @@
           // Helper to build word with anchor tokens using current board state
           // mv: {row,col,dir,word}
           // Returns placedWord + (anchor) when anchor exists, else just placedWord
-          function wordWithAnchor(mv){
-            try{
-              const dir = String(mv.dir||'H').toUpperCase();
-              let r = (mv.row|0), c = (mv.col|0);
-              const dr = (dir==='V')?1:0, dc=(dir==='V')?0:1;
-              const toks = tokensFromBracketStr(String(mv.word||''));
-              // Clone board state and overlay placement
-              const board = matchBoardState.slice();
-              const original = matchBoardState.slice();
-              let ti = 0;
-              let lastPlacedIdx = r*15+c;
-              for (let step=0; step<40; step++){
-                if (r<0||r>=15||c<0||c>=15) break;
-                const pos = r*15+c;
-                if (!String(board[pos]||'').trim()){
-                  if (ti < toks.length){ board[pos] = toks[ti++]; lastPlacedIdx = pos; } else { break; }
-                }
-                if (ti >= toks.length) { break; }
-                r += dr; c += dc;
-              }
-              // Find span bounds in new board
-              // Compute start from initial cell, extend backwards
-              let sr = (mv.row|0), sc = (mv.col|0);
-              let er = Math.floor(lastPlacedIdx/15), ec = (lastPlacedIdx%15);
-              // move start backwards while previous cell is non-empty
-              while(true){
-                const pr = sr - dr, pc = sc - dc;
-                if (pr<0||pr>=15||pc<0||pc>=15) break;
-                if (!String(board[pr*15+pc]||'').trim()) break;
-                sr = pr; sc = pc;
-              }
-              // move end forwards while next cell is non-empty
-              while(true){
-                const nr = er + dr, nc = ec + dc;
-                if (nr<0||nr>=15||nc<0||nc>=15) break;
-                if (!String(board[nr*15+nc]||'').trim()) break;
-                er = nr; ec = nc;
-              }
-              const spanToks = [];
-              const anchorToks = [];
-              for (let rr=sr, cc=sc; ; rr+=dr, cc+=dc){
-                const pos = rr*15+cc;
-                const tk = board[pos] || ' ';
-                if (String(tk||'').trim()){ spanToks.push(tk); if (String(original[pos]||'').trim()) anchorToks.push(original[pos]); }
-                if (rr===er && cc===ec) break;
-              }
-              const placed = tokensFromBracketStr(String(mv.word||''));
-              const placedStr = placed.join('');
-              const anchorStr = anchorToks.join('');
-              return anchorStr ? `${placedStr}(${anchorStr})` : placedStr;
-            }catch(_){ return String(mv.word||''); }
-          }
+          // wordWithAnchor is defined globally; reuse here
           const arr = all.map((m,i)=>{
             const eqNum = (typeof m.equity==='number') ? m.equity : Number(m.equity||0);
             const coordES = coordsStr(m.row|0, m.col|0, m.dir||'H');
