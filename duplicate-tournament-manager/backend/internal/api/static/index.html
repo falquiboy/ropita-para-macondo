@@ -1059,7 +1059,9 @@
             const coordES = coordsStr(m.row|0, m.col|0, m.dir||'H');
             const arrow = (String(m.dir||'H').toUpperCase()==='V') ? '(↓)' : '(→)';
             const dispWord = wordWithAnchor(m);
-            return { idx:i, score: Number(m.score||0), eq: eqNum, coord: `${coordES} ${arrow}`, word: dispWord, leave: String(m.leave||''), lv: (typeof m.leaveVal==='number'? m.leaveVal : Number(m.leaveVal||0)) };
+            const typ = String(m.type||'');
+            const typES = (typ==='EXCH'? 'CAMBIO' : (typ==='PASS'? 'PASA' : ''));
+            return { idx:i, type: typES, score: Number(m.score||0), eq: eqNum, coord: `${coordES} ${arrow}`, word: dispWord, leave: String(m.leave||''), lv: (typeof m.leaveVal==='number'? m.leaveVal : Number(m.leaveVal||0)) };
           });
           arr.sort((a,b)=> (b.eq - a.eq));
           tnStaticRank.clear();
@@ -1082,8 +1084,8 @@
             return `<tr data-idx="${r.idx}"${playedCls}><td>${i+1}</td><td>${r.score|0}</td><td>${eq}</td><td>${r.coord}</td><td>${r.word}</td><td>${leave}</td><td>${lv}</td></tr>`;
           }).join('');
           const warn = (!all.length ? `<div style="margin-top:4px;color:#b91c1c">Sin jugadas. Si VALIDATE_SPAN está activo, puede filtrar todo en posiciones con palabras no españolas en el tablero.</div>` : '');
-          root.innerHTML = `<div style="margin-bottom:4px;color:#374151;font-size:12px">Jugadas: ${all.length}</div>`+
-            `<table id="tnTable" style="border-collapse:collapse;width:100%;font-size:12px"><thead><tr style="background:#f8fafc"><th>#</th><th>Score</th><th>Equity</th><th>Coord</th><th>Palabra</th><th>Leave</th><th>Leave Val</th></tr></thead><tbody>${rows||''}</tbody></table>` + warn;
+          root.innerHTML = `<div style=\"margin-bottom:4px;color:#374151;font-size:12px\">Jugadas: ${all.length}</div>`+
+            `<table id=\"tnTable\" style=\"border-collapse:collapse;width:100%;font-size:12px\"><thead><tr style=\"background:#f8fafc\"><th>#</th><th>Tipo</th><th>Score</th><th>Equity</th><th>Coord</th><th>Palabra</th><th>Leave</th><th>Leave Val</th></tr></thead><tbody>${rows||''}</tbody></table>` + warn;
           // Click to preview selection (position-based within sorted list); do not auto-preview
           try {
             const tb = document.getElementById('tnTable');
@@ -1113,7 +1115,9 @@
             const eq = (typeof m.equity==='number'? m.equity : Number(m.equity||0));
             const sc = (typeof m.score==='number'? m.score : Number(m.score||0));
             const dispWord = wordWithAnchor(m);
-            return { idx:i, win:wp, coord:`${coordES} ${arrow}`, word:dispWord, leave:String(m.leave||''), eq:eq, score: sc, statRank };
+            const typ = String(m.type||'');
+            const typES = (typ==='EXCH'? 'CAMBIO' : (typ==='PASS'? 'PASA' : ''));
+            return { idx:i, type: typES, win:wp, coord:`${coordES} ${arrow}`, word:dispWord, leave:String(m.leave||''), eq:eq, score: sc, statRank };
           }).sort((a,b)=> b.win - a.win);
           // Determine the actually played move key to highlight
           let playedKey = null;
@@ -1133,7 +1137,7 @@
             return `<tr data-idx=\"${r.idx}\"${playedCls}><td>${i+1}</td><td>${sc}</td><td>${win}%</td><td>${eq}</td><td>${r.statRank||''}</td><td>${r.coord}</td><td>${r.word}</td><td>${r.leave}</td></tr>`;
           }).join('');
           root.innerHTML = `<div style=\"margin-bottom:4px;color:#374151;font-size:12px\">Jugadas (Sim): ${all.length}</div>`+
-            `<table id=\"tnTable\" style=\"border-collapse:collapse;width:100%;font-size:12px\"><thead><tr style=\"background:#f8fafc\"><th>#</th><th>Score</th><th>Win%</th><th>Equity</th><th>Rk(Eq)</th><th>Coord</th><th>Palabra</th><th>Leave</th></tr></thead><tbody>${rows||''}</tbody></table>`;
+            `<table id=\"tnTable\" style=\"border-collapse:collapse;width:100%;font-size:12px\"><thead><tr style=\"background:#f8fafc\"><th>#</th><th>Tipo</th><th>Score</th><th>Win%</th><th>Equity</th><th>Rk(Eq)</th><th>Coord</th><th>Palabra</th><th>Leave</th></tr></thead><tbody>${rows||''}</tbody></table>`;
           try { const tb=document.getElementById('tnTable'); if(tb){ tb.querySelectorAll('tbody tr').forEach((tr,pos)=>{ tr.onclick=()=>{ tnSelPos = pos; previewSelectedMove(); highlightSelectedRow(); }; }); } } catch(_){ }
           // No auto-select after sim either; keep initial state previewless
         }catch(e){ console.error('genTurnMovesSim failed', e); }

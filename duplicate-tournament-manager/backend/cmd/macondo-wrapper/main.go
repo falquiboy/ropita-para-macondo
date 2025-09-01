@@ -534,7 +534,14 @@ FALLBACK_DONE:
             pm := simPlay.Move()
             if pm == nil || pm.Action() != move.MoveTypePlay { continue }
             mv := toMove(pm)
-            // Attach sim metrics
+            // Attach type and sim metrics
+            typ := "PLAY"
+            switch pm.Action() {
+            case move.MoveTypeExchange:
+                typ = "EXCH"
+            case move.MoveTypePass:
+                typ = "PASS"
+            }
             mv.WinPct = 100.0 * simPlay.WinProb()
             // Use current ply (0) score stats if present
             stats := simPlay.ScoreStatsNoLock()
@@ -542,6 +549,7 @@ FALLBACK_DONE:
                 mv.Mean = stats[0].Mean()
                 mv.Stdev = stats[0].Stdev()
             }
+            mv.Type = typ
             res.All = append(res.All, mv)
         }
         if len(res.All) > 0 {
@@ -563,6 +571,14 @@ FALLBACK_DONE:
         for i, pm := range plays {
             if pm.Action() != move.MoveTypePlay { continue }
             mv := toMove(pm)
+            typ := "PLAY"
+            switch pm.Action() {
+            case move.MoveTypeExchange:
+                typ = "EXCH"
+            case move.MoveTypePass:
+                typ = "PASS"
+            }
+            mv.Type = typ
             if validateSpan {
                 // Optional: validate main-word span against KWG
                 span := buildMainWordTokens(req.Board.Rows, mv)

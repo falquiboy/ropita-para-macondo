@@ -349,7 +349,14 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request){
         lv := 0.0; if csc != nil { lv = csc.LeaveValue(pm.Leave()) } else { lv = pm.Equity() - float64(pm.Score()) }
         eq := pm.Equity(); if eq == 0 { eq = float64(pm.Score()) + lv }
         raw := strings.ReplaceAll(pm.TilesString(), ".", ""); word := normalizeWordToBrackets(raw)
-        return Move{ Word: word, Row: r, Col: c, Dir: dir, Score: pm.Score(), Leave: pm.LeaveString(), LeaveVal: lv, Equity: eq }
+        typ := "PLAY"
+        switch pm.Action() {
+        case move.MoveTypeExchange:
+            typ = "EXCH"
+        case move.MoveTypePass:
+            typ = "PASS"
+        }
+        return Move{ Type: typ, Word: word, Row: r, Col: c, Dir: dir, Score: pm.Score(), Leave: pm.LeaveString(), LeaveVal: lv, Equity: eq }
     }
     if mode == "sim" {
         if topk > len(plays) { topk = len(plays) }

@@ -18,6 +18,7 @@ type Player struct {
 }
 
 type Move struct {
+    Type string `json:"type,omitempty"` // PLAY | EXCH | PASS
     Word string `json:"word"`
     Row  int    `json:"row"`
     Col  int    `json:"col"`
