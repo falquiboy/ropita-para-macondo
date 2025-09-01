@@ -687,13 +687,13 @@
           out.push(s[i]); i++; }
         return out;
       }
-      // Build display word with anchor for a move using current board state
+      // Build display word with anchor in correct position using current board state
       function wordWithAnchor(mv){
         try{
           const dir = String(mv.dir||'H').toUpperCase();
           let r = (mv.row|0), c = (mv.col|0);
           const dr = (dir==='V')?1:0, dc=(dir==='V')?0:1;
-          const toks = tokensFromBracketStr(String(mv.word||''));
+          const placeToks = tokensFromBracketStr(String(mv.word||''));
           // Clone board state and overlay placement
           const board = matchBoardState.slice();
           const original = matchBoardState.slice();
@@ -703,9 +703,9 @@
             if (r<0||r>=15||c<0||c>=15) break;
             const pos = r*15+c;
             if (!String(board[pos]||'').trim()){
-              if (ti < toks.length){ board[pos] = toks[ti++]; lastPlacedIdx = pos; } else { break; }
+              if (ti < placeToks.length){ board[pos] = placeToks[ti++]; lastPlacedIdx = pos; } else { break; }
             }
-            if (ti >= toks.length) { break; }
+            if (ti >= placeToks.length) { break; }
             r += dr; c += dc;
           }
           // Find span bounds in new board
@@ -723,17 +723,26 @@
             if (!String(board[nr*15+nc]||'').trim()) break;
             er = nr; ec = nc;
           }
-          const anchorToks = [];
+          const toPlain = (tk)=>{ return (tk && tk.startsWith('[') && tk.endsWith(']')) ? tk.slice(1,-1) : (tk||''); };
+          // Walk span composing placed and anchor segments in order
+          const segs = [];
           for (let rr=sr, cc=sc; ; rr+=dr, cc+=dc){
             const pos = rr*15+cc;
             const tk = board[pos] || ' ';
-            if (String(tk||'').trim() && String(original[pos]||'').trim()) anchorToks.push(original[pos]);
+            const isAnchor = String(tk||'').trim() && String(original[pos]||'').trim();
+            segs.push({ anchor: isAnchor, token: toPlain(isAnchor ? original[pos] : tk) });
             if (rr===er && cc===ec) break;
           }
-          const placed = tokensFromBracketStr(String(mv.word||''));
-          const placedStr = placed.join('');
-          const anchorStr = anchorToks.join('');
-          return anchorStr ? `${placedStr}(${anchorStr})` : placedStr;
+          // Merge consecutive anchors into one parenthesized block
+          let out = '';
+          for (let i=0; i<segs.length; ){
+            if (!segs[i].anchor){ out += segs[i].token; i++; continue; }
+            let j=i; let buf='';
+            while(j<segs.length && segs[j].anchor){ buf += segs[j].token; j++; }
+            out += '(' + buf + ')';
+            i=j;
+          }
+          return out;
         }catch(_){ return String(mv.word||''); }
       }
       function rebuildRackCounts(){ rackCounts={}; for(const t of rackTokensArr){ rackCounts[t]=(rackCounts[t]||0)+1; } }
