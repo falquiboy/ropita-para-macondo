@@ -57,14 +57,14 @@
       .coord.col { height: var(--cell-size); transform: translateY(var(--row-label-nudge)); }
       .coords-spacer { height: var(--header-h); }
       /* Tiles mapping grid */
-      .tiles-grid { margin-top: 4px; display: flex; flex-direction: column; gap: 6px; }
-      .tiles-row { display: flex; gap: 6px; align-items: center; justify-content: flex-start; }
+      .tiles-grid { margin-top: 2px; display: flex; flex-direction: column; gap: 4px; }
+      .tiles-row { display: flex; gap: 4px; align-items: center; justify-content: flex-start; }
       /* Minimal items: count first (fixed width), then uniform square sample */
       .tile-card { display:flex; align-items:center; gap:6px; padding:0; border:0; border-radius:0; background:transparent; min-height: auto; justify-content: flex-start; }
       .tile-card.dim { opacity: .35; }
-      .tile-card .count { display:inline-block; min-width: 22px; text-align:right; font-size:12px; color:#111; font-weight:700; font-variant-numeric: tabular-nums; }
-      .tile-card .sample { display:inline-flex; align-items:center; justify-content:center; position:relative; width:26px; height:26px; border:1px solid #bbb; border-radius:3px; background:#fff; font-weight:700; font-size:15px; }
-      .tile-card .sample .val { position:absolute; right:2px; bottom:1px; font-size:8px; font-weight:600; opacity:.85; line-height:1; }
+      .tile-card .count { display:inline-block; min-width: 18px; text-align:right; font-size:11px; color:#111; font-weight:700; font-variant-numeric: tabular-nums; }
+      .tile-card .sample { display:inline-flex; align-items:center; justify-content:center; position:relative; width:22px; height:22px; border:1px solid #bbb; border-radius:3px; background:#fff; font-weight:700; font-size:13px; }
+      .tile-card .sample .val { position:absolute; right:2px; bottom:1px; font-size:7px; font-weight:600; opacity:.85; line-height:1; }
       /* Tiles mapping rows (6 groups) */
       /* Removed old auto-fill grid to maintain grouping */
       /* Final state UI */
@@ -165,7 +165,7 @@
         <div id="tnRacks" style="display:none; margin-top:4px; font-size:12px; color:#374151">Atriles: Tú [ <span id="tnRackYou">—</span> ] · Bot [ <span id="tnRackBot">—</span> ]</div>
         <div id="turnMoves" style="display:none; margin-top:6px"></div>
       </div>
-      <div id="tilesSidebar" style="margin-left:8px; min-width: 360px; flex: 1;">
+      <div id="tilesSidebar" style="margin-left:8px; min-width: 280px; width: 280px; flex: 0 0 auto;">
         <h3 style="margin:6px 0 4px">Tiles Mapping</h3>
         <div id="tilesSummary" style="margin:4px 0 6px; font-size:12px; color:#374151; font-weight:600"></div>
         <div id="tilesMap" class="tiles-grid"></div>
