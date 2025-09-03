@@ -97,14 +97,7 @@
       <span id="matchInfo"></span>
     </div>
     <div class="row">
-      <button id="matchShuffle">Shuffle Rack</button>
-      <button id="matchRecall">Recall (ultimo)</button>
-      <button id="matchRecallAll" title="Esc: devolver todas las fichas al atril">Recall (todos) (Esc)</button>
-      <button id="matchPass">Pasar</button>
-      <button id="matchAbort" title="Abortar partida actual">Abortar</button>
-      <button id="matchExchange">Intercambiar</button>
-      <input id="matchExchangeTiles" type="text" placeholder="Tiles a cambiar (ej: AE)" style="width:12rem; text-transform: uppercase"/>
-      <button id="matchAIMove">AI mueve</button>
+      <button id="matchAIMMovePlaceholder" style="display:none"></button>
       <select id="matchAIMode"><option value="static">Hasty</option><option value="sim">Sim</option></select>
       <label style="margin-left:6px">Hilos <input id="matchSimThreads" type="number" value="1" min="1" max="16" style="width:3.2rem"></label>
       <label>Orden rack
@@ -118,6 +111,7 @@
       </label>
       <button id="matchSubmitPlay" title="Enviar jugada (Enter)">Jugar</button>
       <label style="display:flex;align-items:center;gap:4px"><input id="matchAutoAI" type="checkbox"/> Auto AI</label>
+      <button id="matchAIMove">AI mueve</button>
     </div>
       <div class="row">
         <label>KWG Preset
@@ -149,6 +143,16 @@
         </div>
         <!-- Rack placed just below the board -->
         <div class="rack" style="margin-top:6px">Rack: <div id="matchRack" class="rack" style="margin-left:6px"></div></div>
+        <!-- Core in-game controls directly under rack -->
+        <div class="row" style="margin:6px 0">
+          <button id="matchShuffle">Shuffle Rack</button>
+          <button id="matchRecall">Recall (ultimo)</button>
+          <button id="matchRecallAll" title="Esc: devolver todas las fichas al atril">Recall (todos) (Esc)</button>
+          <button id="matchPass">Pasar</button>
+          <button id="matchExchange">Intercambiar</button>
+          <input id="matchExchangeTiles" type="text" placeholder="Tiles a cambiar (ej: AE)" style="width:12rem; text-transform: uppercase"/>
+          <button id="matchAbort" title="Abortar partida actual">Abortar</button>
+        </div>
         <div style="margin-top:4px;font-size:12px;color:#6b7280" title="Barra espaciadora: cambia dirección de tipeo">Inicio: <span id="matchCoordLabel">—</span></div>
         <div id="turnNav" style="display:none; margin-top:6px; font-size:12px; display:flex; align-items:center; gap:6px">
           <button id="tnStart" title="Inicio">⏮</button>
