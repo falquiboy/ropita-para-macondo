@@ -57,8 +57,8 @@
       .coord.col { height: var(--cell-size); transform: translateY(var(--row-label-nudge)); }
       .coords-spacer { height: var(--header-h); }
       /* Tiles mapping grid */
-      .tiles-grid { margin-top: 6px; display: flex; flex-direction: column; gap: 8px; }
-      .tiles-row { display: flex; gap: 8px; align-items: center; justify-content: flex-start; }
+      .tiles-grid { margin-top: 4px; display: flex; flex-direction: column; gap: 6px; }
+      .tiles-row { display: flex; gap: 6px; align-items: center; justify-content: flex-start; }
       /* Minimal items: count first (fixed width), then uniform square sample */
       .tile-card { display:flex; align-items:center; gap:6px; padding:0; border:0; border-radius:0; background:transparent; min-height: auto; justify-content: flex-start; }
       .tile-card.dim { opacity: .35; }
@@ -165,7 +165,7 @@
         <div id="tnRacks" style="display:none; margin-top:4px; font-size:12px; color:#374151">Atriles: Tú [ <span id="tnRackYou">—</span> ] · Bot [ <span id="tnRackBot">—</span> ]</div>
         <div id="turnMoves" style="display:none; margin-top:6px"></div>
       </div>
-      <div id="tilesSidebar" style="margin-left:12px; min-width: 360px; flex: 1;">
+      <div id="tilesSidebar" style="margin-left:8px; min-width: 360px; flex: 1;">
         <h3 style="margin:6px 0 4px">Tiles Mapping</h3>
         <div id="tilesSummary" style="margin:4px 0 6px; font-size:12px; color:#374151; font-weight:600"></div>
         <div id="tilesMap" class="tiles-grid"></div>
@@ -518,14 +518,15 @@
       }
       // Unseen tiles rendering driven by backend (/matches/{id}/unseen)
       function orderedGroupsForMap(){
-        // 6 groups, in order; include V between F and Y as requested
+        // Groups for rendering unseen tiles; moved C,D,M,P before S,R,N,T
         return [
           ['?'],
           ['Q','B','G','L'],
           ['A','E','O','I','U'],
           ['J','Z','X','Ñ','LL','RR'],
           ['CH','H','F','V','Y'],
-          ['S','R','N','T','C','D','M','P']
+          ['C','D','M','P'],
+          ['S','R','N','T']
         ];
       }
       function renderTilesUnseen(unseenMap){
