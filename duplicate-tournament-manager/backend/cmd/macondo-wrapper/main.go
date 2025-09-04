@@ -9,6 +9,7 @@ import (
     "strings"
     "io"
     "math"
+    "sort"
 
     dapi "dupman/backend/internal/api"
 
@@ -455,6 +456,15 @@ FALLBACK_DONE:
     exchAllowed := g.Bag().TilesRemaining() >= 1
     plays := mg.GenAll(rack, exchAllowed)
 
+    // Helper: compute equity for sorting (prefer engine-provided equity; fallback to score + leave value)
+    moveEquity := func(pm *move.Move) float64 {
+        if pm == nil { return -1e18 }
+        if eq := pm.Equity(); eq != 0 { return eq }
+        lv := 0.0
+        if csc != nil { lv = csc.LeaveValue(pm.Leave()) }
+        return float64(pm.Score()) + lv
+    }
+
     // Helper: convert move to API shape
     toMove := func(pm *move.Move) dapi.Move {
         if pm == nil { return dapi.Move{} }
@@ -495,11 +505,12 @@ FALLBACK_DONE:
             if req.Sim.TopK > 0 { topK = req.Sim.TopK }
         }
         if topK > len(plays) { topK = len(plays) }
-        // Enable exchanges when bag allows
-        // Allow exchanges as long as there is at least 1 tile in the bag
+        // Recompute plays to ensure exchange generation is allowed when bag has tiles
         exchAllowed := g.Bag().TilesRemaining() >= 1
         plays = mg.GenAll(rack, exchAllowed)
-        cand := plays[:topK]
+        // Sort all candidates by equity (desc) then cut topK
+        sort.SliceStable(plays, func(i,j int) bool { return moveEquity(plays[i]) > moveEquity(plays[j]) })
+        cand := append([]*move.Move{}, plays[:topK]...)
         // Optional KWG span validation
         if validateSpan {
             filtered := make([]*move.Move, 0, len(cand))
@@ -532,7 +543,7 @@ FALLBACK_DONE:
         // Build response sorted by win probability
         for _, simPlay := range sp {
             pm := simPlay.Move()
-            if pm == nil || pm.Action() != move.MoveTypePlay { continue }
+            if pm == nil { continue }
             mv := toMove(pm)
             // Attach type and sim metrics
             typ := "PLAY"
@@ -552,24 +563,39 @@ FALLBACK_DONE:
             mv.Type = typ
             res.All = append(res.All, mv)
         }
+        // Helper to reconstruct equity from Move fields when we don't have pm here
+        moveEquityFromMove := func(score int, leaveVal float64, equity float64) float64 {
+            if equity != 0 { return equity }
+            return float64(score) + leaveVal
+        }
         if len(res.All) > 0 {
-            res.Best = res.All[0]
-            // Identify ties by winPct equality within epsilon
-            eps := 1e-6
-            bestWP := res.Best.WinPct
+            // Equity-first selection; use win% to break near ties (epsilon)
+            eps := 1.0 // equity points considered empate
+            bestIdx := 0
+            bestEq := moveEquityFromMove(res.All[0].Score, res.All[0].LeaveVal, res.All[0].Equity)
+            bestWP := res.All[0].WinPct
             for i := 1; i < len(res.All); i++ {
-                if math.Abs(res.All[i].WinPct-bestWP) < eps {
-                    res.Ties = append(res.Ties, res.All[i])
-                } else {
-                    break
+                eqi := moveEquityFromMove(res.All[i].Score, res.All[i].LeaveVal, res.All[i].Equity)
+                if eqi > bestEq+eps || (math.Abs(eqi-bestEq) <= eps && res.All[i].WinPct > bestWP) {
+                    bestEq = eqi
+                    bestWP = res.All[i].WinPct
+                    bestIdx = i
                 }
+            }
+            res.Best = res.All[bestIdx]
+            // Collect ties by equity within epsilon
+            for i := 0; i < len(res.All); i++ {
+                if i == bestIdx { continue }
+                eqi := moveEquityFromMove(res.All[i].Score, res.All[i].LeaveVal, res.All[i].Equity)
+                if math.Abs(eqi-bestEq) <= eps { res.Ties = append(res.Ties, res.All[i]) }
             }
         }
     } else {
         // Static equity mode (default)
-        bestScore := -1
+        bestEq := -1e18
+        // Sort by equity to reflect priority in output
+        sort.SliceStable(plays, func(i,j int) bool { return moveEquity(plays[i]) > moveEquity(plays[j]) })
         for i, pm := range plays {
-            if pm.Action() != move.MoveTypePlay { continue }
             mv := toMove(pm)
             typ := "PLAY"
             switch pm.Action() {
@@ -579,7 +605,7 @@ FALLBACK_DONE:
                 typ = "PASS"
             }
             mv.Type = typ
-            if validateSpan {
+            if validateSpan && pm.Action() == move.MoveTypePlay {
                 // Optional: validate main-word span against KWG
                 span := buildMainWordTokens(req.Board.Rows, mv)
                 if !wordExistsInKWG(gd, ld.TileMapping(), span) {
@@ -587,11 +613,12 @@ FALLBACK_DONE:
                 }
             }
             res.All = append(res.All, mv)
-            if i == 0 || mv.Score > bestScore {
+            eq := moveEquity(pm)
+            if i == 0 || eq > bestEq {
                 res.Best = mv
-                bestScore = mv.Score
+                bestEq = eq
                 res.Ties = res.Ties[:0]
-            } else if mv.Score == bestScore {
+            } else if math.Abs(eq-bestEq) < 1e-6 {
                 res.Ties = append(res.Ties, mv)
             }
         }

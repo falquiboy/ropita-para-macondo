@@ -40,16 +40,24 @@
       .col { display: flex; flex-direction: column; gap: 0.5rem; }
       /* Rack tiles */
       .rack { display: flex; gap: 4px; align-items: center; }
-      .tile { width: 26px; height: 26px; padding: 0 2px; border-radius: 3px; background: #fff; border: 1px solid #bbb; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; cursor: pointer; user-select: none; position: relative; font-size: 15px; }
+      .tile { width: 26px; height: 26px; padding: 0 2px; border-radius: 3px; background: #fff; border: 1px solid #bbb; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; cursor: pointer; user-select: none; position: relative; font-size: 15px; transition: transform 120ms ease; }
       .tile.digraph { width: 26px; }
-      .tile.blank { color: #555; font-style: italic; }
+      /* Blank ('?') should look like a normal tile in rack */
+      .tile.blank { color: inherit; font-style: normal; }
       .tile.selected { outline: 2px solid #10b981; background: #e6fffa; }
       .tile .val { position: absolute; right: 2px; bottom: 1px; font-size: 8px; opacity: 0.85; font-weight: 600; line-height: 1; }
       /* (board tiles show plain text with cream background; values hidden) */
       /* DnD visual polish for rack */
       .rack { position: relative; }
       .tile.dragging { opacity: 0.65; transform: scale(1.05); z-index: 2; }
-      .tile.drag-over { transform: translateX(12px); background: rgba(59,130,246,0.15); }
+      .tile.drag-over { background: rgba(59,130,246,0.15); }
+      /* Pointer-driven DnD overlay */
+      #dragLayer { position: fixed; inset: 0; pointer-events: none; z-index: 9999; }
+      .drag-ghost { position: absolute; width: 26px; height: 26px; border-radius: 3px; background: #fff; border: 1px solid #bbb; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:15px; box-shadow: 0 4px 10px rgba(0,0,0,.25); will-change: transform; transform: translate3d(0,0,0); }
+      .drag-ghost .val { position:absolute; right:2px; bottom:1px; font-size:8px; opacity:.85; font-weight:600; line-height:1; }
+      .cell.highlight { outline: 2px solid #10b981; outline-offset: -2px; }
+      .tile.dragging-src { visibility: hidden; }
+      .cell.drag-src-cell { opacity: .2; }
       /* Coordinates (ES: filas letras, columnas números) */
       .coords-row { display: grid; grid-template-columns: repeat(15, var(--cell-size)); gap: var(--gap); height: var(--header-h); margin-top: 0.25rem; }
       .coords-col { display: grid; grid-template-rows: repeat(15, var(--cell-size)); gap: var(--gap); margin-right: 4px; }
@@ -169,11 +177,14 @@
         <h3 style="margin:6px 0 4px">Tiles Mapping</h3>
         <div id="tilesSummary" style="margin:4px 0 6px; font-size:12px; color:#374151; font-weight:600"></div>
         <div id="tilesMap" class="tiles-grid"></div>
+        <!-- Tracking de partida (debajo del mapping): Score | Bolsa | No vistas | Etapa -->
+        <div id="tilesTracking" style="margin:8px 0 0; font-size:12px; color:#111; font-weight:600">
+          Score: <span id="matchScore"></span> | Bolsa: <span id="matchBag"></span> | No vistas: <span id="matchUnseen"></span>
+          <span id="matchPhase" style="margin-left:8px;color:#2563eb;font-weight:600"></span>
+        </div>
       </div>
     </div>
-    <div class="row">
-      <div style="margin-left:0">Score: <span id="matchScore"></span> | Bolsa: <span id="matchBag"></span> | No vistas: <span id="matchUnseen"></span> <span id="matchPhase" style="margin-left:8px;color:#2563eb;font-weight:600"></span></div>
-    </div>
+    
 
     <div id="finalModal" class="final-modal">
       <div class="panel">
@@ -260,6 +271,7 @@
         <div class="grid" id="board"></div>
       </div>
     </div>
+    <div id="dragLayer"></div>
     <div class="row">
       <div class="col" style="flex:1">
         <label>Board rows (15 lines)</label>
@@ -301,6 +313,9 @@
       let previewPlacements = {}; // boardIndex -> token (for post-mortem preview)
       let matchOver = false; // GAME_OVER state
       let endReason = '';
+      // Pointer DnD state
+      const ENH_DND = true; // enable enhanced pointer-based DnD
+      let dragState = null; // {src:'rack'|'board', fromIdx, token, ghost, offX, offY, x, y, boardRect, rackRect, hoverCell, hoverRackIdx, srcEl, srcCellEl}
 
       function initMatchBoard() {
         if (!matchBoardEl) matchBoardEl = document.getElementById('matchBoard');
@@ -325,7 +340,29 @@
               }
             }catch(_){ /* ignore */ }
           });
-          d.addEventListener('click', ()=> onMatchCellClick(i));
+          d.addEventListener('click', (ev)=>{
+            // Simple click: si hay una ficha pendiente en esta celda, devuélvela al atril
+            if (ENH_DND && !dragState && pendingPlacements[i]){
+              const tk = pendingPlacements[i];
+              // Añadir al final del rack (mapeando comodín)
+              rackTokensArr.push(isPlacedBlankToken(tk) ? '?' : tk);
+              delete pendingPlacements[i];
+              rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText(); renderMatchBoard();
+              ev.stopPropagation();
+              return;
+            }
+            onMatchCellClick(i);
+          });
+          // Enhanced DnD: start drag from pending placement back to rack or to another cell
+          d.addEventListener('pointerdown', (ev)=>{
+            if (!ENH_DND) return;
+            const tk = pendingPlacements[i];
+            // Only draggable if it's a pending placement (not fixed board tile)
+            if (!tk) return;
+            ev.preventDefault();
+            startPointerDrag({ src:'board', fromIdx:i, token:tk, clientX:ev.clientX, clientY:ev.clientY, srcCellEl: d });
+            try { d.setPointerCapture(ev.pointerId); } catch(_){}
+          });
           matchBoardEl.appendChild(d);
         }
         previewPlacements = {}; lastHighlight = null; renderMatchBoard();
@@ -598,8 +635,9 @@
         if (!el) return;
         el.innerHTML = '';
         // Enable dropping to rack container (append dragged tile at end)
-        el.ondragover = (ev)=>{ ev.preventDefault(); };
+        el.ondragover = (ev)=>{ if (!ENH_DND) ev.preventDefault(); };
         el.ondrop = (ev)=>{
+          if (ENH_DND) return; // pointer-based handler active
           ev.preventDefault();
           const data = ev.dataTransfer?.getData('text/plain');
           try{
@@ -630,47 +668,53 @@
           const val = nominalValueFor(tk);
           if (val!=null && tk!=='?') { const vs=document.createElement('span'); vs.className='val'; vs.textContent=String(val); sp.appendChild(vs); }
           sp.title = 'Click: ' + (startCell? 'colocar':'seleccionar para intercambio');
-          // Drag-and-drop reorder and drag to board
-          sp.setAttribute('draggable', 'true');
-          sp.addEventListener('dragstart', (ev)=>{
-            draggingKind = 'rack';
-            try { ev.dataTransfer.effectAllowed = 'move'; } catch(_){ }
-            // Use a simple payload similar to wolges to avoid OS fallback icons
-            try { ev.dataTransfer?.setData('text/plain', JSON.stringify({kind:'rack', idx})); } catch(_){ }
-            rackDragFrom = idx;
-            sp.classList.add('dragging');
-          });
-          sp.addEventListener('dragend', ()=>{ draggingKind = null; rackDragFrom = -1; sp.classList.remove('dragging'); const tiles = el.querySelectorAll('.tile.drag-over'); tiles.forEach(t=>t.classList.remove('drag-over')); });
-          sp.addEventListener('dragover', (ev)=>{ ev.preventDefault(); });
-          sp.addEventListener('dragenter', ()=>{ if (draggingKind==='rack' && rackDragFrom !== idx) sp.classList.add('drag-over'); });
-          sp.addEventListener('dragleave', ()=>{ sp.classList.remove('drag-over'); });
-          sp.addEventListener('drop', (ev)=>{
-            ev.preventDefault(); ev.stopPropagation();
-            const data = ev.dataTransfer?.getData('text/plain');
-            try{
-              const info = JSON.parse(data||'{}');
-              if (!info) return;
-              if (info.kind === 'rack' && Number.isInteger(info.idx)){
-                const from = info.idx; const to = idx;
-                if (from !== to && from>=0 && from<rackTokensArr.length){
-                  const [item] = rackTokensArr.splice(from,1);
-                  const insertAt = (from<to)? (to-1) : to;
-                  rackTokensArr.splice(insertAt, 0, item);
-                  rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText();
+          if (!ENH_DND) {
+            // HTML5 Drag-and-drop fallback
+            sp.setAttribute('draggable', 'true');
+            sp.addEventListener('dragstart', (ev)=>{
+              draggingKind = 'rack';
+              try { ev.dataTransfer.effectAllowed = 'move'; } catch(_){ }
+              try { ev.dataTransfer?.setData('text/plain', JSON.stringify({kind:'rack', idx})); } catch(_){ }
+              rackDragFrom = idx; sp.classList.add('dragging');
+            });
+            sp.addEventListener('dragend', ()=>{ draggingKind = null; rackDragFrom = -1; sp.classList.remove('dragging'); const tiles = el.querySelectorAll('.tile.drag-over'); tiles.forEach(t=>t.classList.remove('drag-over')); });
+            sp.addEventListener('dragover', (ev)=>{ ev.preventDefault(); });
+            sp.addEventListener('dragenter', ()=>{ if (draggingKind==='rack' && rackDragFrom !== idx) sp.classList.add('drag-over'); });
+            sp.addEventListener('dragleave', ()=>{ sp.classList.remove('drag-over'); });
+            sp.addEventListener('drop', (ev)=>{
+              ev.preventDefault(); ev.stopPropagation();
+              const data = ev.dataTransfer?.getData('text/plain');
+              try{
+                const info = JSON.parse(data||'{}');
+                if (!info) return;
+                if (info.kind === 'rack' && Number.isInteger(info.idx)){
+                  const from = info.idx; const to = idx;
+                  if (from !== to && from>=0 && from<rackTokensArr.length){
+                    const [item] = rackTokensArr.splice(from,1);
+                    const insertAt = (from<to)? (to-1) : to;
+                    rackTokensArr.splice(insertAt, 0, item);
+                    rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText();
+                  }
+                } else if (info.kind === 'board' && Number.isInteger(info.idx)){
+                  const src = info.idx; const tk2 = pendingPlacements[src];
+                  if (tk2){
+                    const prevRack = rackTokensArr[idx];
+                    rackTokensArr[idx] = isPlacedBlankToken(tk2) ? '?' : tk2;
+                    pendingPlacements[src] = prevRack;
+                    rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText(); renderMatchBoard();
+                  }
                 }
-              } else if (info.kind === 'board' && Number.isInteger(info.idx)){
-                // Swap pending tile from board into this rack slot
-                const src = info.idx; const tk = pendingPlacements[src];
-                if (tk){
-                  const prevRack = rackTokensArr[idx];
-                  rackTokensArr[idx] = isPlacedBlankToken(tk) ? '?' : tk;
-                  pendingPlacements[src] = prevRack;
-                  rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText(); renderMatchBoard();
-                }
-              }
-            }catch(_){ /* ignore */ }
-            sp.classList.remove('drag-over');
-          });
+              }catch(_){ /* ignore */ }
+              sp.classList.remove('drag-over');
+            });
+          } else {
+            // Pointer-based enhanced DnD
+            sp.addEventListener('pointerdown', (ev)=>{
+              ev.preventDefault();
+              startPointerDrag({ src:'rack', fromIdx: idx, token: tk, clientX: ev.clientX, clientY: ev.clientY, srcEl: sp });
+              try { sp.setPointerCapture(ev.pointerId); } catch(_){}
+            });
+          }
           sp.addEventListener('click', (ev)=>{
             if (draggingKind) { ev.preventDefault(); return; }
             if (startCell){
@@ -697,6 +741,124 @@
         const t = tokensFromBracketStr(String(s||''));
         return t.map(x=> (x && x.startsWith('[') && x.endsWith(']')) ? x.slice(1,-1) : x).join('');
       }
+      // ===== Enhanced Pointer DnD =====
+      function startPointerDrag({src, fromIdx, token, clientX, clientY, srcEl=null, srcCellEl=null}){
+        const dragLayer = document.getElementById('dragLayer');
+        const ghost = document.createElement('div'); ghost.className = 'drag-ghost';
+        ghost.textContent = tokensToPlain(token).toUpperCase();
+        dragLayer.appendChild(ghost);
+        const board = document.getElementById('matchBoard');
+        const rackEl = document.getElementById('matchRack');
+        dragState = {
+          src, fromIdx, token,
+          ghost,
+          offX: 13, offY: 13,
+          x: clientX, y: clientY,
+          boardRect: board.getBoundingClientRect(),
+          rackRect: rackEl.getBoundingClientRect(),
+          hoverCell: -1, hoverRackIdx: -1,
+          srcEl, srcCellEl
+        };
+        if (srcEl) srcEl.classList.add('dragging-src');
+        if (srcCellEl) srcCellEl.classList.add('drag-src-cell');
+        moveGhost(clientX, clientY);
+        window.addEventListener('pointermove', onPointerMove, {passive:true});
+        window.addEventListener('pointerup', onPointerUp, {passive:false});
+        window.addEventListener('pointercancel', onPointerCancel, {passive:false});
+        window.addEventListener('blur', onPointerCancel, {passive:false});
+      }
+      function moveGhost(x, y){ if(!dragState) return; dragState.x=x; dragState.y=y; const g=dragState.ghost; g.style.transform = `translate3d(${x-dragState.offX}px, ${y-dragState.offY}px, 0)`; highlightTargets(); }
+      function onPointerMove(ev){ if(!dragState) return; moveGhost(ev.clientX, ev.clientY); }
+      function clearHighlights(){ const cells = document.querySelectorAll('.cell.highlight'); cells.forEach(c=>c.classList.remove('highlight')); }
+      function highlightTargets(){ if(!dragState) return; const {boardRect, rackRect, x, y} = dragState; clearHighlights(); dragState.hoverCell=-1; dragState.hoverRackIdx=-1;
+        // board hover
+        if (x>=boardRect.left && x<=boardRect.right && y>=boardRect.top && y<=boardRect.bottom){
+          const s = boardRect.width/15; const col = Math.max(0, Math.min(14, Math.floor((x-boardRect.left)/s))); const row = Math.max(0, Math.min(14, Math.floor((y-boardRect.top)/s)));
+          const idx = row*15+col; dragState.hoverCell = idx; const cell = document.getElementById('matchBoard').children[idx]; if (cell) cell.classList.add('highlight'); return;
+        }
+        // rack hover (compute index by x)
+        if (x>=rackRect.left && x<=rackRect.right && y>=rackRect.top && y<=rackRect.bottom){
+          const tiles = Math.max(1, rackTokensArr.length);
+          const slotW = rackRect.width/tiles;
+          let pos = Math.floor((x - rackRect.left)/slotW + 0.0001);
+          pos = Math.max(0, Math.min(rackTokensArr.length, pos));
+          dragState.hoverRackIdx = pos;
+        } else if (y>=rackRect.top && y<=rackRect.bottom) {
+          // Extend target area a bit a la derecha/izquierda para facilitar insertar al extremo
+          const tiles = Math.max(1, rackTokensArr.length);
+          const slotW = rackRect.width/tiles;
+          if (x > rackRect.right && x < rackRect.right + slotW*0.8){
+            dragState.hoverRackIdx = rackTokensArr.length; // insertar al final
+          } else if (x < rackRect.left && x > rackRect.left - slotW*0.8){
+            dragState.hoverRackIdx = 0; // insertar al inicio
+          }
+        }
+        applyRackPushAside();
+      }
+      function rackStep(){
+        const rackEl = document.getElementById('matchRack');
+        const t = rackEl.querySelectorAll('.tile');
+        if (t.length>=2){
+          const a = t[0].getBoundingClientRect();
+          const b = t[1].getBoundingClientRect();
+          return (b.left - a.left); // includes gap
+        }
+        // fallback to style width + gap 4
+        return 30;
+      }
+      function applyRackPushAside(){
+        // During drag, shift tiles to visualize insertion slot
+        if (!dragState) return;
+        const rackEl = document.getElementById('matchRack');
+        const tiles = rackEl.querySelectorAll('.tile');
+        const step = rackStep();
+        const dst = dragState.hoverRackIdx; // 0..len
+        const from = (dragState.src==='rack') ? dragState.fromIdx : -1;
+        for (let i=0;i<tiles.length;i++){
+          let dx = 0;
+          if (dst<0){ dx = 0; }
+          else if (from>=0){
+            if (dst > from){ // moving right
+              if (dst === rackTokensArr.length){
+                // when inserting at far right, shift all tiles after 'from' left (including last)
+                if (i > from) dx = -step;
+              } else {
+                // shift tiles between (from, dst) left
+                if (i>from && i<dst) dx = -step;
+              }
+            } else if (dst < from){ // moving left, tiles between [dst .. from-1] shift right
+              if (i>=dst && i<from) dx = step;
+            } else { dx = 0; }
+          } else { // dragging from board -> make room at dst: shift tiles [dst .. end] right
+            if (i>=dst) dx = step;
+            // Edge visualization: if inserting at the far right, nudge last tile left to show space
+            if (dst === rackTokensArr.length && i === tiles.length - 1) dx = -step;
+          }
+          tiles[i].style.transform = (dx!==0) ? `translateX(${dx}px)` : '';
+        }
+      }
+      function endPointerDrag(){ if(!dragState) return; const {ghost, srcEl, srcCellEl} = dragState; try{ ghost.remove(); }catch(_){}; clearHighlights(); const rackEl = document.getElementById('matchRack'); rackEl.querySelectorAll('.tile').forEach(t=> t.style.transform=''); if (srcEl) srcEl.classList.remove('dragging-src'); if (srcCellEl) srcCellEl.classList.remove('drag-src-cell'); window.removeEventListener('pointermove', onPointerMove); window.removeEventListener('pointerup', onPointerUp); window.removeEventListener('pointercancel', onPointerCancel); window.removeEventListener('blur', onPointerCancel); dragState=null; }
+      function onPointerUp(ev){ if(!dragState) return; ev.preventDefault(); const {src, fromIdx, token, hoverCell, hoverRackIdx} = dragState; 
+        if (hoverCell>=0){
+          if (src==='rack') { dropRackTokenAtCell(fromIdx, hoverCell); }
+          else if (src==='board'){ movePlacementOnBoard(fromIdx, hoverCell); }
+        } else if (hoverRackIdx>=0){
+          if (src==='rack'){
+            let to = hoverRackIdx; if (to > rackTokensArr.length) to = rackTokensArr.length;
+            if (fromIdx!==to){
+              const [item] = rackTokensArr.splice(fromIdx,1);
+              const insertAt = (fromIdx<to)? (to-1) : to;
+              rackTokensArr.splice(insertAt,0,item);
+              rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText();
+            }
+          } else if (src==='board'){
+            const insertAt = Math.min(Math.max(0, hoverRackIdx), rackTokensArr.length);
+            rackTokensArr.splice(insertAt,0, isPlacedBlankToken(token)?'?':token); delete pendingPlacements[fromIdx]; rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText(); renderMatchBoard();
+          }
+        }
+        endPointerDrag();
+      }
+      function onPointerCancel(){ endPointerDrag(); }
       // Build display word with anchor in correct position using current board state
       function wordWithAnchor(mv){
         try{

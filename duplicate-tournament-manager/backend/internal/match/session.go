@@ -8,6 +8,8 @@ import (
     "sync"
     "os"
     "log"
+    "sort"
+    "math"
 
     "github.com/domino14/macondo/board"
     mconfig "github.com/domino14/macondo/config"
@@ -284,9 +286,20 @@ func (s *Session) AIMove(mode AIMode, simIters, simPlies, topK, simThreads int) 
         best = plays[0]
         for _, pm := range plays[1:] { if pm.Score() > best.Score() { best = pm } }
     } else {
-        // Simmer
+        // Simmer (equity-first candidates)
         if topK <= 0 || topK > len(plays) { topK = min(len(plays), 50) }
-        cand := plays[:topK]
+        // Ensure csc exists for leave values
+        if s.csc == nil { c, _ := equity.NewCombinedStaticCalculator(s.KwgName, s.CFG, equity.LeavesFilename, equity.PEGAdjustmentFilename); s.csc = c }
+        // Sort all moves by equity desc before slicing
+        moveEquity := func(pm *move.Move) float64 {
+            if pm == nil { return -1e18 }
+            if eq := pm.Equity(); eq != 0 { return eq }
+            lv := 0.0
+            if s.csc != nil { lv = s.csc.LeaveValue(pm.Leave()) }
+            return float64(pm.Score()) + lv
+        }
+        sort.SliceStable(plays, func(i,j int) bool { return moveEquity(plays[i]) > moveEquity(plays[j]) })
+        cand := append([]*move.Move{}, plays[:topK]...)
         // Ensure we consider exchange (and pass) even if they didn't make topK
         if exchAllowed {
             var bestEx *move.Move
@@ -311,8 +324,7 @@ func (s *Session) AIMove(mode AIMode, simIters, simPlies, topK, simThreads int) 
             for _, pm := range cand { if pm == passMv { seen = true; break } }
             if !seen { cand = append(cand, passMv) }
         }
-        // Ensure csc exists
-        if s.csc == nil { c, _ := equity.NewCombinedStaticCalculator(s.KwgName, s.CFG, equity.LeavesFilename, equity.PEGAdjustmentFilename); s.csc = c }
+        // Ensure csc exists (already ensured above)
         simmer := &montecarlo.Simmer{}
         simmer.Init(s.Game, []equity.EquityCalculator{s.csc}, s.csc, s.CFG)
         if simThreads <= 0 { simThreads = 1 }
@@ -324,9 +336,19 @@ func (s *Session) AIMove(mode AIMode, simIters, simPlies, topK, simThreads int) 
         if err := simmer.PrepareSim(simPlies, cand); err != nil { return nil, err }
         if simIters <= 0 { simIters = 1000 }
         simmer.SimSingleThread(simIters, simPlies)
-        sp := simmer.WinningPlay()
-        if sp == nil { return nil, errors.New("no sim winner") }
-        best = sp.Move()
+        // Equity-first; use win% to break ties within epsilon
+        winners := simmer.PlaysByWinProb().PlaysNoLock()
+        if len(winners) == 0 { return nil, errors.New("no sim winner") }
+        eps := 1.0
+        bestPM := winners[0].Move(); bestEq := moveEquity(bestPM); bestWP := winners[0].WinProb()
+        for _, sp := range winners[1:] {
+            pm := sp.Move(); if pm == nil { continue }
+            eq := moveEquity(pm)
+            if eq > bestEq+eps || (math.Abs(eq-bestEq) <= eps && sp.WinProb() > bestWP) {
+                bestPM = pm; bestEq = eq; bestWP = sp.WinProb()
+            }
+        }
+        best = bestPM
     }
     if err := s.Game.PlayMove(best, true, 0); err != nil { return nil, err }
     s.recordPlayEvent(p, best)
