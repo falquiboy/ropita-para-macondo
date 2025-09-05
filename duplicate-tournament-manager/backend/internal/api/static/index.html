@@ -1145,6 +1145,12 @@
           }
         }catch(_){ /* ignore */ }
       }
+      function formatWordByType(type, word){
+        const t = String(type||'').toUpperCase();
+        if (t === "EXCH" || t === "EXCHANGE") return `exch ${tokensToPlain(word||'')}`;
+        if (t === "PASS") return "pass";
+        return word||'';
+      }
       function renderHistory(rows){
         const div = document.getElementById('matchHistory'); if(!div) return;
         const mapType = (t)=>{
@@ -1422,8 +1428,8 @@
           '<th style="text-align:right;padding:4px;border-bottom:1px solid #e5e7eb">Acum (Bot)</th>'+
           '</tr></thead><tbody>';
         for (const r of rounds){ if(!r) continue; const y=r.you||{}, b=r.bot||{};
-          const yt = y.type==='PASS'?'Pasa': y.type==='EXCH' ? ('Intercambia '+(y.word||'')) : (y.word||'');
-          const bt = b.type==='PASS'?'Pasa': b.type==='EXCH' ? ('Intercambia '+(b.word||'')) : (b.word||'');
+          const yt = (String(y.type||'').toUpperCase()==='EXCH') ? (`exch ${tokensToPlain(y.word||'')}`) : (String(y.type||'').toUpperCase()==='PASS' ? 'pass' : (y.word||''));
+          const bt = (String(b.type||'').toUpperCase()==='EXCH') ? (`exch ${tokensToPlain(b.word||'')}`) : (String(b.type||'').toUpperCase()==='PASS' ? 'pass' : (b.word||''));
           html += '<tr>'+
             `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${r.n}</td>`+
             `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9\">${y.coord||''}</td>`+
