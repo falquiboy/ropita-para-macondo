@@ -1178,7 +1178,7 @@
             `<td style="padding:4px;border-bottom:1px solid #f1f5f9">${row.ply||''}</td>`+
             `<td style="padding:4px;border-bottom:1px solid #f1f5f9">${who}</td>`+
             `<td style="padding:4px;border-bottom:1px solid #f1f5f9">${mapType(row.type)}</td>`+
-            `<td style="padding:4px;border-bottom:1px solid #f1f5f9">${row.word||''}</td>`+
+            `<td style="padding:4px;border-bottom:1px solid #f1f5f9">${formatWordByType(row.type,row.word)}</td>`+
             `<td style="padding:4px;border-bottom:1px solid #f1f5f9">${coord}</td>`+
             `<td style="padding:4px;border-bottom:1px solid #f1f5f9;text-align:right">${row.score??''}</td>`+
             `<td style="padding:4px;border-bottom:1px solid #f1f5f9;text-align:right">${row.cum??''}</td>`+
