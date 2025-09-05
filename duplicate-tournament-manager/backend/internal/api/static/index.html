@@ -99,6 +99,7 @@
     <div id="finalBanner" class="final-banner" style="display:none"></div>
 
     <h2>Partida vs Bot</h2>
+    <div id="devPanel" style="display:none">
     <div class="row">
       <button id="matchCreate">Nueva partida (Hasty)</button>
       <button id="matchCreateSim">Nueva partida (Sim)</button>
@@ -313,6 +314,7 @@
       let previewPlacements = {}; // boardIndex -> token (for post-mortem preview)
       let matchOver = false; // GAME_OVER state
       let endReason = '';
+      let autoPassInFlight = false; // evita bucles al auto‑pasar para cierre
       // Pointer DnD state
       const ENH_DND = true; // enable enhanced pointer-based DnD
       let dragState = null; // {src:'rack'|'board', fromIdx, token, ghost, offX, offY, x, y, boardRect, rackRect, hoverCell, hoverRackIdx, srcEl, srcCellEl}
@@ -1102,6 +1104,19 @@
           if (nav) nav.style.display = (String(j.play_state||'').toUpperCase().includes('GAME_OVER')? 'flex' : 'none');
           if (nav && nav.style.display==='flex'){ await initTurnNav(); document.getElementById('tnRacks').style.display='block'; }
         }catch(_){ }
+        // Auto-cierre: si el usuario se quedó sin fichas y la bolsa está en 0, y el turno es del Bot,
+        // emitimos automáticamente un PASS del Bot para formalizar el cierre.
+        try{
+          const bagRem = Number(j.bag||j.remaining||0);
+          const onTurn = Number(j.turn||1);
+          const userRack = rackTokensArr.length;
+          const isGameOver = String(j.play_state||'').toUpperCase().includes('GAME_OVER');
+          if (!isGameOver && !autoPassInFlight && bagRem===0 && userRack===0 && onTurn===1){
+            autoPassInFlight = true;
+            await doPass();
+            autoPassInFlight = false;
+          }
+        }catch(_){ autoPassInFlight = false; }
         // Tiles mapping updated via refreshUnseen()
       }
       async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); if(j && Array.isArray(j.rows)){ computeLastHighlightFromRows(j.rows); endReason = computeEndReasonFromRows(j.rows); renderHistoryGrouped(j.rows); renderMatchBoard(); } } catch(_){} }
@@ -1451,36 +1466,40 @@
         // determine start index (first placement cell in line)
         const idxs = Object.keys(pendingPlacements).map(k=>parseInt(k));
         if(!idxs.length) return;
-        // Infer direction from placements only
-        let dir;
+        // Infer direction: if only one tile placed, try both H and V
         const rows = new Set(idxs.map(i=>Math.floor(i/15)));
         const cols = new Set(idxs.map(i=>i%15));
-        if (rows.size === 1) dir = 'H';
-        else if (cols.size === 1) dir = 'V';
-        else dir = 'H';
-        // Choose base index at leftmost (H) or topmost (V) among placements
-        let base;
-        if (dir==='H'){
-          base = idxs.reduce((minI,i)=> ((i%15) < (minI%15) ? i : minI), idxs[0]);
-        } else {
-          base = idxs.reduce((minI,i)=> (Math.floor(i/15) < Math.floor(minI/15) ? i : minI), idxs[0]);
-        }
-        // walk backwards along direction to include any contiguous existing tiles so coords point to actual word start
-        let r = Math.floor(base/15), c = base%15;
-        if (dir==='H'){
-          while (c-1>=0){ const i = r*15 + (c-1); const tk = (matchBoardState[i]||' ').trim(); if(!tk) break; c--; }
-        } else {
-          while (r-1>=0){ const i = (r-1)*15 + c; const tk = (matchBoardState[i]||' ').trim(); if(!tk) break; r--; }
-        }
-        // Join placed tiles in board order along the inferred direction
-        const scanOrder = idxs.slice().sort((a,b)=> dir==='H' ? ((a%15)-(b%15)) : (Math.floor(a/15)-Math.floor(b/15)) );
-        const word = scanOrder.map(i=>pendingPlacements[i]).join('');
-        const payload = { word, row: r, col: c, dir };
+        let dirCandidates = [];
+        if (idxs.length === 1) { dirCandidates = ['H','V']; }
+        else if (rows.size === 1) { dirCandidates = ['H']; }
+        else if (cols.size === 1) { dirCandidates = ['V']; }
+        else { dirCandidates = ['H']; }
+        // Construct payloads per direction
+        const payloads = dirCandidates.map(dir=>{
+          let base;
+          if (dir==='H') base = idxs.reduce((minI,i)=> ((i%15) < (minI%15) ? i : minI), idxs[0]);
+          else base = idxs.reduce((minI,i)=> (Math.floor(i/15) < Math.floor(minI/15) ? i : minI), idxs[0]);
+          let r = Math.floor(base/15), c = base%15;
+          if (dir==='H'){
+            while (c-1>=0){ const i = r*15 + (c-1); const tk = (matchBoardState[i]||' ').trim(); if(!tk) break; c--; }
+          } else {
+            while (r-1>=0){ const i = (r-1)*15 + c; const tk = (matchBoardState[i]||' ').trim(); if(!tk) break; r--; }
+          }
+          const scanOrder = idxs.slice().sort((a,b)=> dir==='H' ? ((a%15)-(b%15)) : (Math.floor(a/15)-Math.floor(b/15)) );
+          const word = scanOrder.map(i=>pendingPlacements[i]).join('');
+          return { word, row: r, col: c, dir };
+        });
         const submitBtn = document.getElementById('matchSubmitPlay');
         if (submitBtn) submitBtn.disabled = true;
         try{
-          const res = await fetch(`/matches/${matchId}/play`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
-          const j = await res.json(); if(j.error){ alert(j.error); return; }
+          let ok = false, lastErr = '';
+          for (const p of payloads){
+            const res = await fetch(`/matches/${matchId}/play`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(p)});
+            const j = await res.json();
+            if (!j || j.error){ lastErr = (j && j.error) || 'error'; continue; }
+            ok = true; break;
+          }
+          if (!ok){ alert(lastErr || 'Jugada ilegal'); return; }
           await refreshMatch(); await refreshHistory();
           // Auto AI move if enabled
           if (document.getElementById('matchAutoAI')?.checked){ await doAIMove(); }
