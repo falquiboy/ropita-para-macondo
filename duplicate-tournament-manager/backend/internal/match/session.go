@@ -48,6 +48,114 @@ type Session struct {
 
     // minimal in-memory history fallback when engine history isn't populated
     hist []HistRow
+
+    // Analysis mode (manual input): free placement and manual racks/scores
+    Analysis bool
+    ManualBoardRows [15]string
+    ManualScore     [2]int
+    ManualRack      [2]string // textual racks per player (optional/partial)
+
+    // Analysis undo/redo stacks
+    manualUndo []AnalysisSnapshot
+    manualRedo []AnalysisSnapshot
+
+    // Analysis: racks actually used per ply (tokens placed), aligned with fallback hist length
+    manualPlyRacks []string
+
+    // Analysis bag: remaining counts per token key (e.g., "A", "[CH]", "?")
+    AnalysisBag map[string]int
+
+    // Analysis turn pointer (number of events applied)
+    AnalysisTurn int
+}
+
+type AnalysisSnapshot struct {
+    Rows   [15]string
+    Score  [2]int
+    OnTurn int
+    HistLen int
+    PlyRacks []string
+    ManualRack [2]string
+    Bag map[string]int
+    HistRows []HistRow
+}
+
+// captureSnapshot captures the current manual analysis state.
+func (s *Session) captureSnapshot() AnalysisSnapshot {
+    snap := AnalysisSnapshot{ Score: s.ManualScore, OnTurn: int(s.Game.PlayerOnTurn()), HistLen: len(s.hist) }
+    copy(snap.Rows[:], s.ManualBoardRows[:])
+    if len(s.manualPlyRacks) > 0 { tmp := make([]string, len(s.manualPlyRacks)); copy(tmp, s.manualPlyRacks); snap.PlyRacks = tmp }
+    snap.ManualRack = s.ManualRack
+    if s.AnalysisBag != nil { bag := make(map[string]int, len(s.AnalysisBag)); for k,v := range s.AnalysisBag { bag[k]=v }; snap.Bag = bag }
+    if len(s.hist) > 0 { hr := make([]HistRow, len(s.hist)); copy(hr, s.hist); snap.HistRows = hr }
+    return snap
+}
+
+// restoreSnapshot restores a manual analysis snapshot.
+func (s *Session) restoreSnapshot(snap AnalysisSnapshot){
+    copy(s.ManualBoardRows[:], snap.Rows[:])
+    s.ManualScore = snap.Score
+    s.Game.SetPlayerOnTurn(snap.OnTurn)
+    if snap.HistRows != nil { s.hist = append([]HistRow(nil), snap.HistRows...) } else if snap.HistLen >= 0 && snap.HistLen <= len(s.hist) { s.hist = s.hist[:snap.HistLen] }
+    if snap.PlyRacks != nil { s.manualPlyRacks = append([]string(nil), snap.PlyRacks...) } else { s.manualPlyRacks = nil }
+    s.ManualRack = snap.ManualRack
+    if snap.Bag != nil { bag := make(map[string]int, len(snap.Bag)); for k,v := range snap.Bag { bag[k]=v }; s.AnalysisBag = bag } else { s.AnalysisBag = nil }
+}
+
+// Expose helpers for handlers without exporting full fields
+func (s *Session) Capture() AnalysisSnapshot { return s.captureSnapshot() }
+func (s *Session) Restore(snap AnalysisSnapshot) { s.restoreSnapshot(snap) }
+
+// Undo/redo stack helpers
+func (s *Session) ClearRedo(){ s.manualRedo = nil }
+func (s *Session) PushUndo(snap AnalysisSnapshot){ s.manualUndo = append(s.manualUndo, snap) }
+func (s *Session) PopUndo() (AnalysisSnapshot, bool){
+    if len(s.manualUndo)==0 { return AnalysisSnapshot{}, false }
+    last := s.manualUndo[len(s.manualUndo)-1]
+    s.manualUndo = s.manualUndo[:len(s.manualUndo)-1]
+    return last, true
+}
+func (s *Session) PushRedo(snap AnalysisSnapshot){ s.manualRedo = append(s.manualRedo, snap) }
+func (s *Session) PopRedo() (AnalysisSnapshot, bool){
+    if len(s.manualRedo)==0 { return AnalysisSnapshot{}, false }
+    last := s.manualRedo[len(s.manualRedo)-1]
+    s.manualRedo = s.manualRedo[:len(s.manualRedo)-1]
+    return last, true
+}
+
+// AppendPlyRack appends definitive rack (placed tokens) for latest ply.
+func (s *Session) AppendPlyRack(r string){ s.manualPlyRacks = append(s.manualPlyRacks, r) }
+
+// ManualPlyRacks exposes placed-rack list for handlers
+func (s *Session) ManualPlyRacks() []string { return s.manualPlyRacks }
+
+// RebuildToTurn reconstructs the Game state to the specified turn (0..len(events))
+func (s *Session) RebuildToTurn(turn int) error {
+    hist := s.Game.History()
+    rules := s.Game.Rules()
+    ng, err := game.NewFromHistory(hist, rules, 0)
+    if err != nil { return err }
+    if turn < 0 { turn = 0 }
+    if turn > len(hist.Events) { turn = len(hist.Events) }
+    if err := ng.PlayToTurn(turn); err != nil { return err }
+    s.Game = ng
+    // Rebuild helpers
+    csc, _ := equity.NewCombinedStaticCalculator(s.Lexicon, s.CFG, equity.LeavesFilename, equity.PEGAdjustmentFilename)
+    s.csc = csc
+    s.sp, _ = aitp.NewAIStaticTurnPlayerFromGame(s.Game, s.CFG, []equity.EquityCalculator{csc})
+    // Mirror board rows and score for UI/snapshots
+    alph := s.Game.Alphabet()
+    for rr := 0; rr < 15; rr++ {
+        var sb strings.Builder
+        for cc := 0; cc < 15; cc++ {
+            ml := s.Game.Board().GetLetter(rr, cc)
+            if ml == 0 { sb.WriteByte(' ') } else { sb.WriteString(alph.Letter(ml)) }
+        }
+        s.ManualBoardRows[rr] = sb.String()
+    }
+    s.ManualScore = [2]int{ s.Game.PointsFor(0), s.Game.PointsFor(1) }
+    s.AnalysisTurn = turn
+    return nil
 }
 
 // HistRow is a lightweight move/event record for UI scoresheet.
@@ -436,6 +544,12 @@ func (s *Session) ScoreRows() []HistRow {
     }
     // fallback
     return append([]HistRow(nil), s.hist...)
+}
+
+// HistAppend appends a fallback history row (analysis/manual mode).
+func (s *Session) HistAppend(hr HistRow){
+    s.mu.Lock(); defer s.mu.Unlock()
+    s.hist = append(s.hist, hr)
 }
 
 // mainWordAt scans the board starting at (row,col) along dir to extract the full

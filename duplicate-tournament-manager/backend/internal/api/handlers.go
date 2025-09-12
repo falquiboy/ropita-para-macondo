@@ -179,8 +179,6 @@ func (h *Handlers) SubmitMove(w http.ResponseWriter, r *http.Request) {
     var in struct{ PlayerID string `json:"player_id"`; Move Move `json:"move"` }
     if err := json.NewDecoder(r.Body).Decode(&in); err != nil { writeJSON(w, http.StatusBadRequest, map[string]string{"error":"bad json"}); return }
 
-    // Decide validation mode based on env ENGINE
-    strict := os.Getenv("ENGINE") == "macondo"
 
     // Acquire lock to read current state
     h.st.mu.Lock()
@@ -206,6 +204,9 @@ func (h *Handlers) SubmitMove(w http.ResponseWriter, r *http.Request) {
     kwg := t.LexiconPath
     rules := t.Ruleset
     h.st.mu.Unlock()
+
+    // Decide validation mode based on env ENGINE
+    strict := os.Getenv("ENGINE") == "macondo"
 
     mv := in.Move
     // Normalize dir and word
@@ -750,13 +751,18 @@ func applyMoveToBoard(boardRows *[]string, mv Move) {
         tokens[i] = line
     }
     // Tokenize move word, honoring [digraph] and lowercase blanks
-    wordToks := tokenizeRow(mv.Word)
+    placeToks := tokenizeRow(mv.Word)
     r, c := mv.Row, mv.Col
     dr, dc := 0, 1
     if mv.Dir == "V" || mv.Dir == "v" { dr, dc = 1, 0 }
-    for _, tk := range wordToks {
-        if r < 0 || r >= 15 || c < 0 || c >= 15 { break }
-        if tokens[r][c] == " " { tokens[r][c] = tk }
+    // Walk along the path; only consume a token when the board cell is empty (anchor-aware)
+    ti := 0
+    for r >= 0 && r < 15 && c >= 0 && c < 15 {
+        if ti >= len(placeToks) { break }
+        if tokens[r][c] == " " {
+            tokens[r][c] = placeToks[ti]
+            ti++
+        }
         r += dr; c += dc
     }
     // Join back to strings (concatenate tokens; tile count stays 15 even if string length varies)
