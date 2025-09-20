@@ -18,6 +18,7 @@ import (
 	aitp "github.com/domino14/macondo/ai/turnplayer"
 	"github.com/domino14/macondo/equity"
 	"github.com/domino14/macondo/game"
+	"github.com/domino14/macondo/gcgio"
 	pb "github.com/domino14/macondo/gen/api/proto/macondo"
 	"github.com/domino14/macondo/montecarlo"
 	"github.com/domino14/macondo/move"
@@ -1293,8 +1294,8 @@ func displayWordWithAnchors(beforeRows, afterRows []string, mv Move) string {
 	return out.String()
 }
 
-// GCG exports the current match history as a GCG-like plaintext log.
-// Digraphs are encoded as single FISE chars: CH=Ç, LL=K, RR=W; lowercase denotes blanks if present.
+// GCG exports the current match history using Macondo's native GCG format.
+// This ensures full compatibility with Macondo CLI for analysis and comparison.
 func (m *MatchHandlers) GCG(w http.ResponseWriter, r *http.Request) {
 	id := m.pathID(r.URL.Path)
 	m.mu.RLock()
@@ -1304,145 +1305,20 @@ func (m *MatchHandlers) GCG(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
-	// Helper: A1..O15
-	toCoord := func(row, col int) string {
-		if row < 0 {
-			row = 0
-		}
-		if col < 0 {
-			col = 0
-		}
-		if row > 14 {
-			row = 14
-		}
-		if col > 14 {
-			col = 14
-		}
-		return string(rune('A'+row)) + strconv.Itoa(col+1)
+
+	// Use Macondo's native GCG export function for full compatibility
+	gcgContent, err := gcgio.GameHistoryToGCG(s.Game.History(), true)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("Failed to generate GCG: %v", err)})
+		return
 	}
-	// Map bracket tokens to FISE single letters for digraphs
-	toFISE := func(word string) string {
-		s := normalizeWordToBrackets(word)
-		var out strings.Builder
-		rs := []rune(s)
-		for i := 0; i < len(rs); {
-			r := rs[i]
-			if r == '[' {
-				j := i + 1
-				for j < len(rs) && rs[j] != ']' {
-					j++
-				}
-				if j < len(rs) && rs[j] == ']' {
-					inner := string(rs[i+1 : j])
-					switch inner {
-					case "CH":
-						out.WriteRune('Ç')
-					case "ch":
-						out.WriteRune('ç')
-					case "LL":
-						out.WriteRune('K')
-					case "ll":
-						out.WriteRune('k')
-					case "RR":
-						out.WriteRune('W')
-					case "rr":
-						out.WriteRune('w')
-					default:
-						out.WriteString(inner)
-					}
-					i = j + 1
-					continue
-				}
-			}
-			// Collapse plain digraph letter pairs as well
-			if i+1 < len(rs) {
-				a, b := rs[i], rs[i+1]
-				if a == 'C' && b == 'H' {
-					out.WriteRune('Ç')
-					i += 2
-					continue
-				}
-				if a == 'L' && b == 'L' {
-					out.WriteRune('K')
-					i += 2
-					continue
-				}
-				if a == 'R' && b == 'R' {
-					out.WriteRune('W')
-					i += 2
-					continue
-				}
-				if a == 'c' && b == 'h' {
-					out.WriteRune('ç')
-					i += 2
-					continue
-				}
-				if a == 'l' && b == 'l' {
-					out.WriteRune('k')
-					i += 2
-					continue
-				}
-				if a == 'r' && b == 'r' {
-					out.WriteRune('w')
-					i += 2
-					continue
-				}
-			}
-			out.WriteRune(r)
-			i++
-		}
-		return out.String()
-	}
-	evs := s.Game.History().GetEvents()
-	var b strings.Builder
-	// Header
-	b.WriteString("; DUPMAN GCG Export\n")
-	if s.Lexicon != "" {
-		b.WriteString("; Lexicon: " + s.Lexicon + "\n")
-	}
-	if s.Ruleset != "" {
-		b.WriteString("; Ruleset: " + s.Ruleset + "\n")
-	}
-	b.WriteString("; Players: You vs Bot\n")
-	// Moves
-	for i, e := range evs {
-		ply := i + 1
-		player := "You"
-		if int(e.GetPlayerIndex()) == 1 {
-			player = "Bot"
-		}
-		t := e.GetType().String()
-		switch {
-		case strings.Contains(strings.ToUpper(t), "PASS"):
-			b.WriteString(strconv.Itoa(ply) + ". " + player + ": PASS\n")
-		case strings.Contains(strings.ToUpper(t), "EXCH"):
-			// We don't have exchanged tiles here; log generic
-			b.WriteString(strconv.Itoa(ply) + ". " + player + ": EXCH\n")
-		default:
-			dir := "H"
-			if e.GetDirection() == pb.GameEvent_VERTICAL {
-				dir = "V"
-			}
-			coord := toCoord(int(e.GetRow()), int(e.GetColumn()))
-			word := ""
-			if ws := e.GetWordsFormed(); len(ws) > 0 {
-				word = toFISE(ws[0])
-			}
-			sc := int(e.GetScore())
-			line := strings.TrimSpace(coord + " " + word + " " + dir)
-			b.WriteString(strconv.Itoa(ply) + ". " + player + ": " + line + " " + fmtPlus(sc) + "\n")
-		}
-	}
-	// Trailer: final score if available
-	if h := s.Game.History(); h != nil && len(h.FinalScores) == 2 {
-		b.WriteString("; Final: " + strconv.Itoa(int(h.FinalScores[0])) + "-" + strconv.Itoa(int(h.FinalScores[1])) + "\n")
-	} else {
-		a, bsc := s.Game.PointsFor(0), s.Game.PointsFor(1)
-		b.WriteString("; Score: " + strconv.Itoa(a) + "-" + strconv.Itoa(bsc) + "\n")
-	}
+
+	// Set appropriate headers for file download
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Disposition", "attachment; filename=\""+s.ID+".gcg\"")
-	_, _ = w.Write([]byte(b.String()))
+
+	// Write the GCG content
+	_, _ = w.Write([]byte(gcgContent))
 }
 
 func fmtPlus(n int) string {
