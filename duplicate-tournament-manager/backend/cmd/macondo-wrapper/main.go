@@ -1,11 +1,13 @@
 package main
 
 import (
+    "context"
     "encoding/json"
     "fmt"
     "log"
     "os"
     "path/filepath"
+    "runtime"
     "strings"
     "io"
     "math"
@@ -494,9 +496,10 @@ FALLBACK_DONE:
     // If simulation requested, run Monte Carlo on top-K plays
     if strings.EqualFold(req.Mode, "sim") || req.Sim != nil {
         // Defaults
-        iters := 100
-        plies := 2
-        threads := 1
+        iters := 2000 // Stronger default
+        plies := 5     // Deeper lookahead
+        // Default to optimal thread count for this hardware
+        threads := max(1, min(8, runtime.NumCPU()-1))
         topK := 20
         if req.Sim != nil {
             if req.Sim.Iters > 0 { iters = req.Sim.Iters }
@@ -533,12 +536,22 @@ FALLBACK_DONE:
         }
         simmer.Init(g, []equity.EquityCalculator{csc}, csc, cfg)
         simmer.SetThreads(threads)
-        // Reasonable default stopping condition
+        // Enhanced stopping condition for stronger play
         simmer.SetStoppingCondition(montecarlo.Stop99)
+        simmer.SetAutostopCheckInterval(32) // Check more frequently
         if err := simmer.PrepareSim(plies, cand); err != nil {
             log.Fatalf("prepare sim: %v", err)
         }
-        simmer.SimSingleThread(iters, plies)
+
+        // Use multi-threaded simulation for better performance
+        ctx := context.Background()
+        if threads > 1 {
+            if err := simmer.Simulate(ctx); err != nil {
+                log.Fatalf("multi-threaded sim failed: %v", err)
+            }
+        } else {
+            simmer.SimSingleThread(iters, plies)
+        }
         sp := simmer.PlaysByWinProb().PlaysNoLock()
         // Build response sorted by win probability
         for _, simPlay := range sp {

@@ -109,7 +109,7 @@
     <div class="row">
       <button id="matchAIMMovePlaceholder" style="display:none"></button>
       <select id="matchAIMode"><option value="static">Hasty</option><option value="sim">Sim</option></select>
-      <label style="margin-left:6px">Hilos <input id="matchSimThreads" type="number" value="1" min="1" max="16" style="width:3.2rem"></label>
+      <label style="margin-left:6px">Hilos <input id="matchSimThreads" type="number" value="8" min="1" max="32" style="width:3.2rem"></label>
       <label>Orden rack
         <select id="matchRackOrder">
           <option value="none">— Orden —</option>
@@ -199,6 +199,26 @@
         <div id="tilesTracking" style="margin:8px 0 0; font-size:12px; color:#111; font-weight:600">
           Score: <span id="matchScore"></span> | Bolsa: <span id="matchBag"></span> | No vistas: <span id="matchUnseen"></span>
           <span id="matchPhase" style="margin-left:8px;color:#2563eb;font-weight:600"></span>
+        </div>
+
+        <!-- Bot Logs Window -->
+        <div id="botLogsSection" style="margin:12px 0 0">
+          <h4 style="margin:0 0 6px; font-size:13px; color:#374151; font-weight:600">Bot Logs</h4>
+          <div id="botLogs" style="
+            height: 120px;
+            overflow-y: auto;
+            border: 1px solid #e5e7eb;
+            border-radius: 4px;
+            padding: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            background-color: #f9fafb;
+            color: #374151;
+            white-space: pre-wrap;
+          "></div>
+          <div style="margin:4px 0 0; font-size:10px; color:#6b7280">
+            Logs en tiempo real del motor Macondo durante simulación/endgame
+          </div>
         </div>
       </div>
       <div id="analysisSidebar" style="margin-left:8px; min-width: 260px; width: 260px; flex: 0 0 auto; display:none">
@@ -367,11 +387,100 @@
       let lastHighlight = null; // Set<number> of board indices to highlight
       let previewPlacements = {}; // boardIndex -> token (for post-mortem preview)
       let matchOver = false; // GAME_OVER state
+      let logEventSource = null; // SSE connection for bot logs
       let endReason = '';
       let autoPassInFlight = false; // evita bucles al auto‑pasar para cierre
       // Pointer DnD state
       const ENH_DND = true; // enable enhanced pointer-based DnD
       let dragState = null; // {src:'rack'|'board', fromIdx, token, ghost, offX, offY, x, y, boardRect, rackRect, hoverCell, hoverRackIdx, srcEl, srcCellEl}
+
+      // ===== Bot Log Streaming =====
+      function startLogStream() {
+        if (!matchId) return;
+
+        // Close existing connection
+        if (logEventSource) {
+          logEventSource.close();
+          logEventSource = null;
+        }
+
+        try {
+          logEventSource = new EventSource(`/matches/${matchId}/logs`);
+
+          logEventSource.onmessage = function(event) {
+            try {
+              const logLine = event.data;
+              if (logLine && logLine.trim()) {
+                appendBotLog(logLine);
+              }
+            } catch (err) {
+              console.error('Error processing log:', err);
+            }
+          };
+
+          logEventSource.onerror = function(event) {
+            console.warn('Log stream error:', event);
+            // Attempt to reconnect after a short delay
+            setTimeout(() => {
+              if (matchId && !matchOver) {
+                startLogStream();
+              }
+            }, 2000);
+          };
+
+          logEventSource.onopen = function() {
+            console.log('Bot log stream connected');
+          };
+        } catch (err) {
+          console.error('Failed to start log stream:', err);
+        }
+      }
+
+      function stopLogStream() {
+        if (logEventSource) {
+          logEventSource.close();
+          logEventSource = null;
+        }
+      }
+
+      function appendBotLog(logLine) {
+        const botLogsEl = document.getElementById('botLogs');
+        if (!botLogsEl) return;
+
+        // Parse JSON log if possible, otherwise display raw
+        let displayText = logLine;
+        try {
+          const logObj = JSON.parse(logLine);
+          if (logObj.message) {
+            const timestamp = logObj.time ? new Date(logObj.time).toLocaleTimeString() : '';
+            const level = logObj.level ? `[${logObj.level.toUpperCase()}]` : '';
+            const component = logObj.component ? `[${logObj.component}]` : '';
+            displayText = `${timestamp} ${level} ${component} ${logObj.message}`;
+          }
+        } catch (e) {
+          // Not JSON, use raw text
+          displayText = logLine;
+        }
+
+        // Append log line
+        botLogsEl.textContent += displayText + '\n';
+
+        // Auto-scroll to bottom
+        botLogsEl.scrollTop = botLogsEl.scrollHeight;
+
+        // Limit log history to prevent memory issues
+        const lines = botLogsEl.textContent.split('\n');
+        if (lines.length > 100) {
+          botLogsEl.textContent = lines.slice(-80).join('\n');
+        }
+      }
+
+      function clearBotLogs() {
+        const botLogsEl = document.getElementById('botLogs');
+        if (botLogsEl) {
+          botLogsEl.textContent = '';
+        }
+      }
 
       function initMatchBoard() {
         if (!matchBoardEl) matchBoardEl = document.getElementById('matchBoard');
@@ -535,7 +644,7 @@
         const banner = document.getElementById('finalBanner');
         const badge = document.getElementById('boardBadge');
         if (!over){ matchOver=false; if(banner) banner.style.display='none'; if(badge) badge.style.display='none'; setControlsEnabled(true); return; }
-        matchOver = true; setControlsEnabled(false);
+        matchOver = true; setControlsEnabled(false); stopLogStream();
         if (badge) badge.style.display='inline-block';
         const scores = Array.isArray(snapshot.final_score)? snapshot.final_score : (Array.isArray(snapshot.score)? snapshot.score : []);
         const a = scores[0]|0, b = scores[1]|0;
@@ -1197,7 +1306,7 @@
         rackTokensArr = tokensFromBracketStr(window._currentRack||''); rebuildRackCounts();
         // Aplicar orden persistente del rack
         try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
-        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}${isAnalysis?' (Análisis)':''}`); initMatchBoard(); document.getElementById('analysisSidebar').style.display = isAnalysis ? 'block' : 'none'; updateToggleUI(true); window._viewMode='analysis'; applyHistoryViewMode(); await refreshUnseen(); await refreshHistory(); updateEndgameUI(j); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } }
+        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}${isAnalysis?' (Análisis)':''}`); initMatchBoard(); document.getElementById('analysisSidebar').style.display = isAnalysis ? 'block' : 'none'; updateToggleUI(true); window._viewMode='analysis'; applyHistoryViewMode(); await refreshUnseen(); await refreshHistory(); updateEndgameUI(j); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } clearBotLogs(); startLogStream(); }
       async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); isAnalysis = !!j.analysis; matchOnTurn = Number(j.turn||0)|0; window._ruleset = j.ruleset||window._ruleset||'OSPS49'; window._lexicon = j.lexicon||window._lexicon||''; window._currentRack = (matchOnTurn===0? (j.rack_you||j.rack||'') : (j.rack_bot||'')); rackTokensArr = tokensFromBracketStr(isAnalysis ? (window._currentRack||'') : (j.rack_you||j.rack||'')); rebuildRackCounts();
         // Reaplicar orden persistente del rack en cada surtido
         try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
@@ -1540,7 +1649,7 @@
           previewPlacements = {}; lastHighlight = null; renderMatchBoard();
           if (!tnPos) { root.innerHTML = '<em>Sin posición</em>'; return; }
           const threads = Math.max(1, parseInt(document.getElementById('matchSimThreads')?.value||'1',10)||1);
-          const qs = new URLSearchParams({ mode:'sim', iters:'1000', plies:'4', topK:'50', threads:String(threads) });
+          const qs = new URLSearchParams({ mode:'sim', iters:'2000', plies:'5', topK:'75', threads:String(threads) });
           const r = await fetch(`/matches/${matchId}/moves?turn=${tnTurn}&${qs.toString()}`);
           const j = await r.json(); if (j && j.error){ root.innerHTML = `<span style=\"color:#b91c1c\">${j.error}</span>`; return; }
           const all = Array.isArray(j.all)? j.all : [];
@@ -1857,13 +1966,22 @@
         if(!matchId) return;
         const mode = aiMode();
         const threads = Math.max(1, parseInt(document.getElementById('matchSimThreads')?.value||'1',10)||1);
-        const payload = (mode==='sim') ? { mode, sim:{ iters:1000, plies:4, topK:50, threads } } : { mode:'static' };
+        const payload = (mode==='sim') ? { mode, sim:{ iters:2000, plies:5, topK:75, threads } } : { mode:'static' };
         const r = await fetch(`/matches/${matchId}/ai_move`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
         const j = await r.json(); if(j.error){ alert(j.error); return; }
         await refreshMatch(); await refreshHistory();
       }
-      // Default threads to (hardware - 1) to keep UI responsive
-      (function(){ try{ const t = (navigator.hardwareConcurrency||1); const el=document.getElementById('matchSimThreads'); if (el && (!el.value || el.value==='1')) el.value=String(Math.max(1, (t|0)-1)); }catch(_){ } })();
+      // Default threads to optimal count for performance
+      (function(){
+        try{
+          const hwThreads = navigator.hardwareConcurrency || 4;
+          const optimalThreads = Math.max(4, Math.min(16, Math.floor(hwThreads * 0.8)));
+          const el = document.getElementById('matchSimThreads');
+          if (el && (!el.value || el.value==='1' || el.value==='8')) {
+            el.value = String(optimalThreads);
+          }
+        } catch(_) { }
+      })();
       // Buttons wiring
       window.addEventListener('load', ()=>{
         document.getElementById('matchCreate').onclick=()=>createMatch(false);
@@ -2234,7 +2352,7 @@
           const topN = Math.max(1, Math.min(50, parseInt($('#topN').value||'25',10)||25));
           req.mode = 'sim';
           // Conservative defaults to avoid timeouts
-          req.sim = { iters: 300, plies: 2, threads: 1, topK: Math.min(15, topN) };
+          req.sim = { iters: 1500, plies: 4, threads: Math.max(4, Math.floor(threads * 0.8)), topK: Math.min(50, topN) };
         }
         const url = engine ? (`/moves?engine=${encodeURIComponent(engine)}`) : '/moves';
         const res = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(req)});

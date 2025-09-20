@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/domino14/macondo v0.11.2
 	github.com/domino14/word-golib v0.2.15
+	github.com/rs/zerolog v1.34.0
 )
 
 require (
@@ -20,9 +21,9 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/owulveryck/onnx-go v0.5.0 // indirect
+	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/rs/zerolog v1.34.0 // indirect
 	github.com/sagikazarmark/locafero v0.9.0 // indirect
 	github.com/samber/lo v1.50.0 // indirect
 	github.com/sourcegraph/conc v0.3.0 // indirect

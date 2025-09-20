@@ -123,6 +123,8 @@ func Router(eng Engine) http.Handler {
 			mh.MovesAt(w, r)
 		case r.Method == http.MethodPost && strings.HasSuffix(p, "/abort"):
 			mh.Abort(w, r)
+		case r.Method == http.MethodGet && strings.HasSuffix(p, "/logs"):
+			mh.LogStream(w, r)
 		case r.Method == http.MethodGet:
 			mh.Get(w, r)
 		case r.Method == http.MethodPost && strings.HasSuffix(p, "/play"):

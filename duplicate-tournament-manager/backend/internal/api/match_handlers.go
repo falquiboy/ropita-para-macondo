@@ -1,9 +1,13 @@
 package api
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"net/http"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,12 +24,82 @@ import (
 	"github.com/domino14/word-golib/tilemapping"
 )
 
+// LogBuffer captures zerolog output and broadcasts to SSE clients
+type LogBuffer struct {
+	mu       sync.RWMutex
+	buffer   bytes.Buffer
+	clients  map[chan string]bool
+	sessionID string
+}
+
+func NewLogBuffer(sessionID string) *LogBuffer {
+	return &LogBuffer{
+		clients:   make(map[chan string]bool),
+		sessionID: sessionID,
+	}
+}
+
+func (lb *LogBuffer) Write(p []byte) (n int, err error) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	// Write to internal buffer
+	n, err = lb.buffer.Write(p)
+	if err != nil {
+		return n, err
+	}
+
+	// Broadcast to all SSE clients
+	logLine := string(p)
+	if len(strings.TrimSpace(logLine)) > 0 {
+		for client := range lb.clients {
+			select {
+			case client <- logLine:
+			default:
+				// Client channel is full or closed, remove it
+				delete(lb.clients, client)
+				close(client)
+			}
+		}
+	}
+
+	return n, nil
+}
+
+func (lb *LogBuffer) AddClient(client chan string) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	lb.clients[client] = true
+}
+
+func (lb *LogBuffer) RemoveClient(client chan string) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	if _, exists := lb.clients[client]; exists {
+		delete(lb.clients, client)
+		close(client)
+	}
+}
+
+func (lb *LogBuffer) GetBuffer() string {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+	return lb.buffer.String()
+}
+
 type MatchHandlers struct {
 	mu   sync.RWMutex
 	byID map[string]*match.Session
+	// Log buffers for each session
+	logBuffers map[string]*LogBuffer
 }
 
-func NewMatchHandlers() *MatchHandlers { return &MatchHandlers{byID: map[string]*match.Session{}} }
+func NewMatchHandlers() *MatchHandlers {
+	return &MatchHandlers{
+		byID: map[string]*match.Session{},
+		logBuffers: map[string]*LogBuffer{},
+	}
+}
 
 // Abort ends the match immediately and marks it as GAME_OVER without rack penalties.
 func (m *MatchHandlers) Abort(w http.ResponseWriter, r *http.Request) {
@@ -218,6 +292,11 @@ func (m *MatchHandlers) AIMove(w http.ResponseWriter, r *http.Request) {
 		topk = in.Sim.TopK
 		threads = in.Sim.Threads
 	}
+
+	// Set up log writer for this session
+	logBuffer := m.GetLogBuffer(id)
+	s.SetLogWriter(logBuffer)
+
 	_, err := s.AIMove(mode, iters, plies, topk, threads)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -1458,7 +1537,9 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode")))
-	iters, plies, topk, threads := 300, 2, 20, 1
+	// Optimized defaults for stronger play
+	optimalThreads := max(1, min(8, runtime.NumCPU()-1))
+	iters, plies, topk, threads := 1500, 4, 50, optimalThreads
 	if v := r.URL.Query().Get("iters"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			iters = n
@@ -1596,14 +1677,26 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request) {
 		simmer := &montecarlo.Simmer{}
 		simmer.Init(ng, []equity.EquityCalculator{csc}, csc, s.CFG)
 		if threads <= 0 {
-			threads = 1
+			threads = max(1, min(8, runtime.NumCPU()-1))
 		}
 		simmer.SetThreads(threads)
+		simmer.SetStoppingCondition(montecarlo.Stop99)
+		simmer.SetAutostopCheckInterval(16)
 		if err := simmer.PrepareSim(plies, cand); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		simmer.SimSingleThread(iters, plies)
+
+		// Use multi-threaded simulation for analysis when beneficial
+		if threads > 1 {
+			ctx := context.Background()
+			if err := simmer.Simulate(ctx); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("simulation failed: %v", err)})
+				return
+			}
+		} else {
+			simmer.SimSingleThread(iters, plies)
+		}
 		sp := simmer.PlaysByWinProb().PlaysNoLock()
 		for _, simPlay := range sp {
 			pm := simPlay.Move()
@@ -1630,4 +1723,94 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request) {
 		res.Best = res.All[0]
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// LogStream provides Server-Sent Events for real-time Macondo bot logs
+func (m *MatchHandlers) LogStream(w http.ResponseWriter, r *http.Request) {
+	id := m.pathID(r.URL.Path)
+
+	if r.Method != http.MethodGet {
+		// Don't use writeJSON for SSE endpoints to avoid MIME type conflicts
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		w.Write([]byte("GET only"))
+		return
+	}
+
+	// Set SSE headers FIRST before any writes
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Headers", "Cache-Control")
+
+	// Write initial connection message to establish SSE stream
+	fmt.Fprintf(w, "data: Log stream connected for session %s\n\n", id)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+
+	// Create a channel for this client
+	clientChan := make(chan string, 100) // Buffer to prevent blocking
+
+	// Get or create log buffer for this session
+	m.mu.Lock()
+	logBuffer, exists := m.logBuffers[id]
+	if !exists {
+		logBuffer = NewLogBuffer(id)
+		m.logBuffers[id] = logBuffer
+	}
+	m.mu.Unlock()
+
+	// Add this client to the log buffer
+	logBuffer.AddClient(clientChan)
+	defer logBuffer.RemoveClient(clientChan)
+
+	// Send any existing buffer content first
+	if existingLogs := logBuffer.GetBuffer(); len(existingLogs) > 0 {
+		fmt.Fprintf(w, "data: %s\n\n", strings.ReplaceAll(existingLogs, "\n", "\\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	}
+
+	// Send keepalive and listen for new logs
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case logLine, ok := <-clientChan:
+			if !ok {
+				return // Channel closed
+			}
+			// Send log line as SSE
+			fmt.Fprintf(w, "data: %s\n\n", strings.ReplaceAll(logLine, "\n", "\\n"))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		case <-ticker.C:
+			// Send keepalive
+			fmt.Fprintf(w, ": keepalive\n\n")
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		case <-r.Context().Done():
+			// Client disconnected
+			return
+		}
+	}
+}
+
+// GetLogBuffer returns the log buffer for a session (for use by session)
+func (m *MatchHandlers) GetLogBuffer(sessionID string) *LogBuffer {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	logBuffer, exists := m.logBuffers[sessionID]
+	if !exists {
+		logBuffer = NewLogBuffer(sessionID)
+		m.logBuffers[sessionID] = logBuffer
+	}
+	return logBuffer
 }
