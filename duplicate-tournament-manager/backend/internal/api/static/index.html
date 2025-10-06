@@ -88,7 +88,7 @@
       .badge-final { position:absolute; top:-10px; right:-10px; background:#111827; color:#fff; font-size:10px; padding:2px 6px; border-radius:10px; opacity:.9; }
       /* Post-mortem moves table selection */
       #tnTable tbody tr.sel { background:#eef6ff; }
-      #tnTable tbody tr.played { background:#f3e8ff; }
+      #tnTable tbody tr.played { font-weight: bold; }
       #tnTable tbody tr:hover { background:#f3f4f6; cursor:pointer; }
       /* Preview highlight on empty cells */
       .cell.last { background:#e6f2ff; border-color:#60a5fa; }
@@ -104,6 +104,8 @@
       <button id="matchCreate">Nueva partida (Hasty)</button>
       <button id="matchCreateSim">Nueva partida (Sim)</button>
       <button id="matchCreateAnalysis">Nueva partida (Análisis)</button>
+      <button id="loadGCG">Cargar GCG</button>
+      <input type="file" id="gcgFile" accept=".gcg" style="display:none">
       <span id="matchInfo"></span>
     </div>
     <div class="row">
@@ -1018,7 +1020,9 @@
             }
           } else if (src==='board'){
             const insertAt = Math.min(Math.max(0, hoverRackIdx), rackTokensArr.length);
-            rackTokensArr.splice(insertAt,0, isPlacedBlankToken(token)?'?':token); delete pendingPlacements[fromIdx]; rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText(); renderMatchBoard();
+            const cleanTk = sanitizeToken(isPlacedBlankToken(token)?'?':token);
+            if (cleanTk) rackTokensArr.splice(insertAt,0, cleanTk);
+            delete pendingPlacements[fromIdx]; rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText(); renderMatchBoard();
           }
         }
         endPointerDrag();
@@ -1082,7 +1086,20 @@
           return out;
         }catch(_){ return String(mv.word||''); }
       }
-      function rebuildRackCounts(){ rackCounts={}; for(const t of rackTokensArr){ rackCounts[t]=(rackCounts[t]||0)+1; } }
+      function sanitizeToken(tk){
+        if (!tk || typeof tk !== 'string') return '';
+        // Remove any pipe characters or other invalid chars that might contaminate tokens
+        let clean = tk.replace(/[|]/g, '');
+        // If it becomes empty or invalid, return empty string
+        if (!clean) return '';
+        return clean;
+      }
+      function rebuildRackCounts(){
+        // Sanitize rack tokens during rebuild to remove any contamination
+        rackTokensArr = rackTokensArr.map(sanitizeToken).filter(tk => tk);
+        rackCounts={};
+        for(const t of rackTokensArr){ rackCounts[t]=(rackCounts[t]||0)+1; }
+      }
       function shuffleRack(){ for(let i=rackTokensArr.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [rackTokensArr[i],rackTokensArr[j]]=[rackTokensArr[j],rackTokensArr[i]]; } rackSelIdx.clear(); rebuildRackCounts(); setMatchRackText(); }
       function isPlacedBlankToken(tk){
         if (!tk) return false;
@@ -1097,12 +1114,23 @@
         if(!keys.length) return;
         const last = keys[0];
         const tk = pendingPlacements[last];
-        if (tk){ rackTokensArr.push(isPlacedBlankToken(tk) ? '?' : tk); rebuildRackCounts(); }
+        if (tk){
+          const cleanTk = sanitizeToken(isPlacedBlankToken(tk) ? '?' : tk);
+          if (cleanTk) rackTokensArr.push(cleanTk);
+          rebuildRackCounts();
+        }
         delete pendingPlacements[last];
         renderMatchBoard(); rackSelIdx.clear(); setMatchRackText();
       }
       function recallAll(){
-        for(const k in pendingPlacements){ const tk=pendingPlacements[k]; if(tk){ rackTokensArr.push(isPlacedBlankToken(tk) ? '?' : tk); } delete pendingPlacements[k]; }
+        for(const k in pendingPlacements){
+          const tk=pendingPlacements[k];
+          if(tk){
+            const cleanTk = sanitizeToken(isPlacedBlankToken(tk) ? '?' : tk);
+            if (cleanTk) rackTokensArr.push(cleanTk);
+          }
+          delete pendingPlacements[k];
+        }
         // Reset typing indicator and direction as part of full recall
         startCell = null; startCellClicks = 0; placeDir = 'H';
         rebuildRackCounts(); renderMatchBoard(); rackSelIdx.clear(); setMatchRackText();
@@ -1307,9 +1335,37 @@
         // Aplicar orden persistente del rack
         try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
         setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}${isAnalysis?' (Análisis)':''}`); initMatchBoard(); document.getElementById('analysisSidebar').style.display = isAnalysis ? 'block' : 'none'; updateToggleUI(true); window._viewMode='analysis'; applyHistoryViewMode(); await refreshUnseen(); await refreshHistory(); updateEndgameUI(j); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } clearBotLogs(); startLogStream(); }
-      async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); isAnalysis = !!j.analysis; matchOnTurn = Number(j.turn||0)|0; window._ruleset = j.ruleset||window._ruleset||'OSPS49'; window._lexicon = j.lexicon||window._lexicon||''; window._currentRack = (matchOnTurn===0? (j.rack_you||j.rack||'') : (j.rack_bot||'')); rackTokensArr = tokensFromBracketStr(isAnalysis ? (window._currentRack||'') : (j.rack_you||j.rack||'')); rebuildRackCounts();
-        // Reaplicar orden persistente del rack en cada surtido
-        try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
+      async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); isAnalysis = !!j.analysis; matchOnTurn = Number(j.turn||0)|0; window._ruleset = j.ruleset||window._ruleset||'OSPS49'; window._lexicon = j.lexicon||window._lexicon||''; window._currentRack = (matchOnTurn===0? (j.rack_you||j.rack||'') : (j.rack_bot||''));
+        // Preserve user's custom rack order in vs-bot mode
+        const preserveOrder = !isAnalysis && rackTokensArr && rackTokensArr.length > 0;
+        const userOrder = preserveOrder ? [...rackTokensArr] : null;
+
+        rackTokensArr = tokensFromBracketStr(isAnalysis ? (window._currentRack||'') : (j.rack_you||j.rack||'')); rebuildRackCounts();
+
+        // In vs-bot mode, try to preserve user's tile arrangement
+        if (preserveOrder && userOrder) {
+          try {
+            // Restore user's custom order if tiles haven't changed significantly
+            const newTiles = [...rackTokensArr].sort();
+            const oldTiles = [...userOrder].sort();
+            if (JSON.stringify(newTiles) === JSON.stringify(oldTiles)) {
+              // Same tiles, preserve user's order
+              rackTokensArr = userOrder;
+              rebuildRackCounts();
+            } else {
+              // Tiles changed, apply default order
+              const saved = localStorage.getItem('rackOrder');
+              if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; }
+            }
+          } catch(_) {
+            // Fallback to default order on error
+            const saved = localStorage.getItem('rackOrder');
+            if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; }
+          }
+        } else {
+          // Analysis mode or first time - apply saved order preference
+          try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
+        }
         setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '');
         document.getElementById('analysisSidebar').style.display = isAnalysis ? 'block' : 'none'; updateToggleUI(true); if(!window._viewMode) window._viewMode='analysis'; applyHistoryViewMode();
         try {
@@ -1385,7 +1441,7 @@
         }catch(_){ autoPassInFlight = false; }
         // Tiles mapping updated via refreshUnseen()
       }
-      async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); if(j && Array.isArray(j.rows)){ window.lastHistoryRows = j.rows; computeLastHighlightFromRows(j.rows); endReason = computeEndReasonFromRows(j.rows); renderHistoryGrouped(j.rows); renderMatchBoard(); } } catch(_){} }
+      async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); console.log('[DEBUG] refreshHistory response:', j); if(j && Array.isArray(j.rows)){ window.lastHistoryRows = j.rows; computeLastHighlightFromRows(j.rows); endReason = computeEndReasonFromRows(j.rows); renderHistoryGrouped(j.rows); renderMatchBoard(); } } catch(e){ console.error('[DEBUG] refreshHistory error:', e); } }
       function computeLastHighlightFromRows(rows){
         try{
           if (!Array.isArray(rows) || rows.length===0) { lastHighlight=null; return; }
@@ -1592,14 +1648,23 @@
             if (ev && String(ev.type||'').toUpperCase()==='TILE_PLACEMENT_MOVE'){
               const coordES = coordsStr(ev.row|0, ev.col|0, ev.dir||'H');
               const arrow = (String(ev.dir||'H').toUpperCase()==='V') ? '(↓)' : '(→)';
-              playedKey = `${coordES} ${arrow}`;
+              // Use 'played' field if available (from post-mortem), otherwise use wordWithAnchor
+              const displayWord = ev.played ? ev.played.replace(/\./g, '') : wordWithAnchor(ev);
+              playedKey = `${coordES} ${arrow}|${displayWord}`;
+              // Debug logging
+              console.log('Static Analysis - Played move key:', playedKey);
+              console.log('Event word:', ev.word, 'Event played:', ev.played, 'Display word:', displayWord);
             }
           }catch(_){ playedKey = null; }
           const rows = arr.slice(0, 50).map((r,i)=>{
             const lv = Number.isFinite(r.lv) ? r.lv.toFixed(2) : '';
             const eq = Number.isFinite(r.eq) ? r.eq.toFixed(2) : '';
             const leave = r.leave || '—';
-            const playedCls = (playedKey && r.coord===playedKey) ? ' class="played"' : '';
+            // Create unique key including both coord and word
+            const moveKey = `${r.coord}|${r.word}`;
+            const playedCls = (playedKey && moveKey===playedKey) ? ' class="played"' : '';
+            // Debug logging for first few moves
+            if (i < 3) console.log(`Candidate ${i+1}: key="${moveKey}", matches played? ${moveKey===playedKey}`);
             return `<tr data-idx="${r.idx}"${playedCls}><td>${i+1}</td><td>${r.score|0}</td><td>${eq}</td><td>${r.coord}</td><td>${r.word}</td><td>${leave}</td><td>${lv}</td></tr>`;
           }).join('');
           const warn = (!all.length ? `<div style="margin-top:4px;color:#b91c1c">Sin jugadas. Si VALIDATE_SPAN está activo, puede filtrar todo en posiciones con palabras no españolas en el tablero.</div>` : '');
@@ -1676,13 +1741,17 @@
             if (ev && String(ev.type||'').toUpperCase()==='TILE_PLACEMENT_MOVE'){
               const coordES = coordsStr(ev.row|0, ev.col|0, ev.dir||'H');
               const arrow = (String(ev.dir||'H').toUpperCase()==='V') ? '(↓)' : '(→)';
-              playedKey = `${coordES} ${arrow}`;
+              // Use 'played' field if available (from post-mortem), otherwise use wordWithAnchor
+              const displayWord = ev.played ? ev.played.replace(/\./g, '') : wordWithAnchor(ev);
+              playedKey = `${coordES} ${arrow}|${displayWord}`;
             }
           }catch(_){ playedKey = null; }
           const rows = arr.slice(0, 50).map((r,i)=>{
             const win = Number.isFinite(r.win)? r.win.toFixed(2) : '';
             const eq = Number.isFinite(r.eq)? r.eq.toFixed(2) : '';
-            const playedCls = (playedKey && r.coord===playedKey) ? ' class=\"played\"' : '';
+            // Create unique key including both coord and word
+            const moveKey = `${r.coord}|${r.word}`;
+            const playedCls = (playedKey && moveKey===playedKey) ? ' class=\"played\"' : '';
             const sc = Number.isFinite(r.score)? (r.score|0) : '';
             return `<tr data-idx=\"${r.idx}\"${playedCls}><td>${i+1}</td><td>${sc}</td><td>${win}%</td><td>${eq}</td><td>${r.statRank||''}</td><td>${r.coord}</td><td>${r.word}</td><td>${r.leave}</td></tr>`;
           }).join('');
@@ -1753,7 +1822,7 @@
           }
         } else if (e.key === 'ArrowUp'){
           const tb = document.getElementById('tnTable'); const total = (tb? tb.querySelectorAll('tbody tr').length : 0);
-          if (total>0){ tnSelPos = Math.max(0, (tnSelPos<0?0:tnSelPos-1)); previewSelectedMove(); highlightSelectedRow(); e.preventDefault(); }
+          if (total>0){ tnSelPos = Math.max(-1, (tnSelPos<0?-1:tnSelPos-1)); previewSelectedMove(); highlightSelectedRow(); e.preventDefault(); }
         } else if (e.key === 'ArrowRight'){
           // Next turn or redo in analysis
           if (isAnalysis && window._viewMode==='analysis'){
@@ -1775,14 +1844,22 @@
       // Grouped renderer: both players in same row; per player show Coord, Word, Pts, Cum
       function renderHistoryGrouped(rows){
         const div = document.getElementById('matchHistory'); if(!div) return;
+        console.log(`[DEBUG] renderHistoryGrouped called with ${rows?.length || 0} rows:`, rows);
+        console.log('[DEBUG] Console logging is working!'); // Test log
         const rounds = [];
         for (const r of (rows||[])){
+          console.log(`[DEBUG] Processing row - Player: ${r.player}, Type: "${r.type}", Word: "${r.word}", Played: "${r.played}", Score: ${r.score}, Ply: ${r.ply}`);
+          console.log(`[DEBUG] Full row object:`, r);
           const idx = Math.floor(((r.ply||1)-1)/2);
           if (!rounds[idx]) rounds[idx] = { n: idx+1, you: null, bot: null };
           const typ = String(r.type||'').toUpperCase();
           const isMeta = (typ==='EXCH' || typ==='EXCHANGE' || typ==='PASS');
           const coord = isMeta ? '' : ((r.row>=0 && r.col>=0) ? coordsStr(r.row, r.col, r.dir) : '');
-          const cell = { word: r.word||'', coord, score: r.score||0, type: typ, cum: r.cum||0 };
+          const cell = { word: r.word||'', played: r.played||'', coord, score: r.score||0, type: typ, cum: r.cum||0 };
+          // DEBUG: Log exchange events
+          if (typ === 'EXCHANGE' || typ === 'EXCH') {
+            console.log(`[DEBUG] Exchange event - Player: ${r.player}, Type: ${typ}, Word: "${r.word}", Played: "${r.played}", Score: ${r.score}, Ply: ${r.ply}`);
+          }
           if (r.player === 0) rounds[idx].you = cell; else rounds[idx].bot = cell;
         }
         const sc = (window.historyScore||[0,0]);
@@ -1811,8 +1888,32 @@
           '</tr>'+
           '</thead><tbody>';
         for (const r of rounds){ if(!r) continue; const y=r.you||{}, b=r.bot||{};
-          const yt = (String(y.type||'').toUpperCase()==='EXCH') ? (`exch ${tokensToPlain(y.word||'')}`) : (String(y.type||'').toUpperCase()==='PASS' ? 'pass' : (y.word||''));
-          const bt = (String(b.type||'').toUpperCase()==='EXCH') ? (`exch ${tokensToPlain(b.word||'')}`) : (String(b.type||'').toUpperCase()==='PASS' ? 'pass' : (b.word||''));
+          // For user: show exchanged tiles, for bot: show count only
+          const isYouExch = (String(y.type||'').toUpperCase()==='EXCH' || String(y.type||'').toUpperCase()==='EXCHANGE');
+          const isBotExch = (String(b.type||'').toUpperCase()==='EXCH' || String(b.type||'').toUpperCase()==='EXCHANGE');
+
+          let yt = y.word||'';
+          if (isYouExch) {
+            // For exchanges, use 'played' field if 'word' is empty
+            const source = y.word || y.played || '';
+            const tiles = tokensToPlain(source);
+            yt = tiles ? `exch ${tiles}` : 'exch';
+            console.log(`[DEBUG] User exchange format: "${yt}" from word: "${y.word}", played: "${y.played}", source: "${source}"`);
+          } else if (String(y.type||'').toUpperCase()==='PASS') {
+            yt = 'pass';
+          }
+
+          let bt = b.word||'';
+          if (isBotExch) {
+            // For bot exchanges, use 'played' field if 'word' is empty, but show count only
+            const source = b.word || b.played || '';
+            const tiles = tokensToPlain(source);
+            const count = tiles ? tiles.length : 0;
+            bt = count > 0 ? `exch ${count}` : 'exch';
+            console.log(`[DEBUG] Bot exchange format: "${bt}" from word: "${b.word}", played: "${b.played}", source: "${source}" (count: ${count})`);
+          } else if (String(b.type||'').toUpperCase()==='PASS') {
+            bt = 'pass';
+          }
           const yCoord = (String(y.type||'').toUpperCase()==='EXCH' || String(y.type||'').toUpperCase()==='EXCHANGE' || String(y.type||'').toUpperCase()==='PASS') ? '' : (y.coord||'');
           const bCoord = (String(b.type||'').toUpperCase()==='EXCH' || String(b.type||'').toUpperCase()==='EXCHANGE' || String(b.type||'').toUpperCase()==='PASS') ? '' : (b.coord||'');
           html += '<tr>'+
@@ -1950,6 +2051,83 @@
           URL.revokeObjectURL(url);
         }catch(e){ alert('No se pudo exportar GCG'); }
       }
+      async function handleGCGLoad(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+
+        const formData = new FormData();
+        formData.append('gcg', file);
+
+        try {
+          const response = await fetch('/matches/load-gcg', {
+            method: 'POST',
+            body: formData
+          });
+          const result = await response.json();
+
+          if (result.error) {
+            alert('Error cargando GCG: ' + result.error);
+            return;
+          }
+
+          // Initialize match with loaded GCG data
+          matchId = result.id;
+          isAnalysis = result.analysis;
+          matchOnTurn = result.turn || 0;
+          window._ruleset = result.ruleset || 'OSPS49';
+          window._lexicon = result.lexicon || '';
+
+          // Set initial rack and scores
+          window._currentRack = result.rack || '';
+          if (typeof tokensFromBracketStr === 'function') {
+            rackTokensArr = tokensFromBracketStr(window._currentRack);
+            if (typeof rebuildRackCounts === 'function') rebuildRackCounts();
+            if (typeof setMatchRackText === 'function') setMatchRackText();
+          }
+
+          // Update board state
+          if (result.board_rows && typeof tokensFromBracketStr === 'function') {
+            matchBoardState = [].concat(...result.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225);
+          }
+
+          // Update scores
+          const scoreEl = document.getElementById('matchScore');
+          if (scoreEl && result.score) {
+            scoreEl.textContent = result.score.join('-');
+          }
+
+          // Show analysis sidebar if it exists
+          const analysisSidebar = document.getElementById('analysisSidebar');
+          if (analysisSidebar) {
+            analysisSidebar.style.display = 'block';
+          }
+
+          // Call UI update functions only if they exist
+          if (typeof updateToggleUI === 'function') updateToggleUI(true);
+          if (!window._viewMode) window._viewMode = 'analysis';
+          if (typeof applyHistoryViewMode === 'function') applyHistoryViewMode();
+
+          // Initialize turn navigation for analysis if function exists
+          if (typeof initTurnNav === 'function') {
+            await initTurnNav();
+          }
+
+          // Refresh match data if functions exist
+          if (typeof refreshMatch === 'function') await refreshMatch();
+          if (typeof refreshHistory === 'function') await refreshHistory();
+
+          // Clear file input
+          event.target.value = '';
+
+          // Show success message
+          console.log('GCG loaded successfully:', result);
+          alert(`GCG cargado exitosamente! Análisis habilitado - Puntuación final: ${result.final_score ? result.final_score.join('-') : result.score.join('-')}`);
+
+        } catch (error) {
+          console.error('GCG loading error:', error);
+          alert('Error cargando archivo GCG: ' + error.message);
+        }
+      }
       function normalizeExchangeTiles(raw){
         let s = String(raw||'').toUpperCase().replace(/\s+/g,'');
         let out = '';
@@ -1986,6 +2164,8 @@
       window.addEventListener('load', ()=>{
         document.getElementById('matchCreate').onclick=()=>createMatch(false);
         document.getElementById('matchCreateSim').onclick=()=>createMatch(true);
+        document.getElementById('loadGCG').onclick=()=>document.getElementById('gcgFile').click();
+        document.getElementById('gcgFile').onchange=handleGCGLoad;
         document.getElementById('matchShuffle').onclick=shuffleRack;
         document.getElementById('matchRecall').onclick=recallLast;
         document.getElementById('matchRecallAll').onclick=recallAll;

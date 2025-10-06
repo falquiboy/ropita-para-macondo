@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os"
 	"runtime"
 	"sort"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 
 	"dupman/backend/internal/match"
 	aitp "github.com/domino14/macondo/ai/turnplayer"
+	mconfig "github.com/domino14/macondo/config"
 	"github.com/domino14/macondo/equity"
 	"github.com/domino14/macondo/game"
 	"github.com/domino14/macondo/gcgio"
@@ -93,12 +95,14 @@ type MatchHandlers struct {
 	byID map[string]*match.Session
 	// Log buffers for each session
 	logBuffers map[string]*LogBuffer
+	eng Engine
 }
 
-func NewMatchHandlers() *MatchHandlers {
+func NewMatchHandlers(eng Engine) *MatchHandlers {
 	return &MatchHandlers{
 		byID: map[string]*match.Session{},
 		logBuffers: map[string]*LogBuffer{},
+		eng: eng,
 	}
 }
 
@@ -715,7 +719,12 @@ func (m *MatchHandlers) ScoreSheet(w http.ResponseWriter, r *http.Request) {
 			if e.GetDirection() == pb.GameEvent_VERTICAL {
 				dir = "V"
 			}
-			rows = append(rows, Row{Ply: i + 1, Player: int(e.GetPlayerIndex()), Type: t, Word: word, Played: e.GetPlayedTiles(), Row: int(e.GetRow()), Col: int(e.GetColumn()), Dir: dir, Score: int(e.GetScore()), Cum: int(e.GetCumulative())})
+			played := e.GetPlayedTiles()
+			// For exchanges, use the exchanged tiles instead of played tiles
+			if t == "EXCHANGE" {
+				played = e.GetExchanged()
+			}
+			rows = append(rows, Row{Ply: i + 1, Player: int(e.GetPlayerIndex()), Type: t, Word: word, Played: played, Row: int(e.GetRow()), Col: int(e.GetColumn()), Dir: dir, Score: int(e.GetScore()), Cum: int(e.GetCumulative())})
 		}
 	} else {
 		for _, e := range sr {
@@ -755,7 +764,12 @@ func (m *MatchHandlers) Events(w http.ResponseWriter, r *http.Request) {
 		if ws := e.GetWordsFormed(); len(ws) > 0 {
 			word = ws[0]
 		}
-		out = append(out, Ev{Ply: i + 1, Player: int(e.GetPlayerIndex()), Type: e.GetType().String(), Row: int(e.GetRow()), Col: int(e.GetColumn()), Dir: dir, Word: word})
+		// For exchanges, put the exchanged tiles in the word field
+		t := e.GetType().String()
+		if t == "EXCHANGE" {
+			word = e.GetExchanged()
+		}
+		out = append(out, Ev{Ply: i + 1, Player: int(e.GetPlayerIndex()), Type: t, Row: int(e.GetRow()), Col: int(e.GetColumn()), Dir: dir, Word: word})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": s.ID, "count": len(out), "events": out})
 }
@@ -1319,6 +1333,107 @@ func (m *MatchHandlers) GCG(w http.ResponseWriter, r *http.Request) {
 
 	// Write the GCG content
 	_, _ = w.Write([]byte(gcgContent))
+}
+
+// LoadGCG creates a new analysis match from a GCG file.
+// This enables analyzing games loaded from Macondo CLI or other GCG sources.
+func (m *MatchHandlers) LoadGCG(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Parse multipart form for file upload
+	err := r.ParseMultipartForm(10 << 20) // 10MB max
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "failed to parse form"})
+		return
+	}
+
+	file, _, err := r.FormFile("gcg")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "no gcg file provided"})
+		return
+	}
+	defer file.Close()
+
+	// Create Macondo configuration (similar to handlers.go pattern)
+	cfg := mconfig.DefaultConfig()
+	if dp := os.Getenv("MACONDO_DATA_PATH"); strings.TrimSpace(dp) != "" {
+		cfg.Set(mconfig.ConfigDataPath, dp)
+	} else {
+		for _, p := range []string{"../../macondo/data", "../macondo/data", "macondo/data"} {
+			if st, err := os.Stat(p); err == nil && st.IsDir() {
+				cfg.Set(mconfig.ConfigDataPath, p)
+				break
+			}
+		}
+	}
+
+	// The configuration should pick up KWG files from the standard paths
+
+	// Parse GCG using Macondo's native parser
+	history, err := gcgio.ParseGCGFromReader(cfg, file)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("invalid GCG: %v", err)})
+		return
+	}
+
+	// Ensure challenge rule is set to VOID to allow invalid words for analysis
+	history.ChallengeRule = pb.ChallengeRule_VOID
+
+	// Get turn parameter (optional - defaults to end of game)
+	turnParam := r.FormValue("turn")
+	targetTurn := len(history.Events) // Default to end
+	if turnParam != "" {
+		if t, err := strconv.Atoi(turnParam); err == nil && t >= 0 {
+			targetTurn = t
+		}
+	}
+
+	// Create new session from GCG history
+	sessionID := genID("a")
+
+	// Determine KWG file to use (prefer FILE2017, fallback to FISE2016)
+	kwgFile := ""
+	if p := findRootFile("FILE2017.kwg"); p != "" {
+		kwgFile = p
+	} else {
+		kwgFile = findRootFile("FISE2016_converted.kwg")
+	}
+
+	// Create session using existing infrastructure (this properly handles KWG loading)
+	session, err := match.NewSession(sessionID, "OSPS49", kwgFile)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to create session: %v", err)})
+		return
+	}
+
+	// Now replace the game with one created from GCG history
+	// Use the session's properly configured game rules
+	g, err := game.NewFromHistory(history, session.Game.Rules(), targetTurn)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to create game from history: %v", err)})
+		return
+	}
+
+	// Set challenge rule to VOID to allow any words in analysis mode
+	g.SetChallengeRule(pb.ChallengeRule_VOID)
+
+	// Replace the game in the session
+	session.Game = g
+	session.Analysis = true // Enable analysis mode
+	session.AnalysisTurn = targetTurn
+
+	// Initialize analysis state from loaded game
+	session.InitializeAnalysisFromGame()
+
+	// Store session
+	m.mu.Lock()
+	m.byID[sessionID] = session
+	m.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, m.serialize(session))
 }
 
 func fmtPlus(n int) string {

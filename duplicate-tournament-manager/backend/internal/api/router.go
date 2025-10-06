@@ -13,7 +13,7 @@ var staticFS embed.FS
 func Router(eng Engine) http.Handler {
 	mux := http.NewServeMux()
 	h := NewHandlers(eng)
-	mh := NewMatchHandlers()
+	mh := NewMatchHandlers(eng)
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -104,6 +104,12 @@ func Router(eng Engine) http.Handler {
 			http.NotFound(w, r)
 		}
 	})
+
+	// Load GCG for analysis
+	mux.HandleFunc("/matches/load-gcg", func(w http.ResponseWriter, r *http.Request) {
+		mh.LoadGCG(w, r)
+	})
+
 	mux.HandleFunc("/matches/", func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
 		switch {

@@ -218,6 +218,80 @@ func (s *Session) RebuildToTurn(turn int) error {
 	return nil
 }
 
+// InitializeAnalysisFromGame initializes analysis mode from a loaded game state.
+// This is used when loading from GCG files to set up the analysis environment.
+func (s *Session) InitializeAnalysisFromGame() {
+	// Initialize manual board rows from current game state
+	board := s.Game.Board()
+	alph := s.Game.Alphabet()
+	for rr := 0; rr < 15; rr++ {
+		var sb strings.Builder
+		for cc := 0; cc < 15; cc++ {
+			ml := board.GetLetter(rr, cc)
+			if ml == 0 {
+				sb.WriteByte(' ')
+			} else {
+				sb.WriteString(alph.Letter(ml))
+			}
+		}
+		s.ManualBoardRows[rr] = sb.String()
+	}
+
+	// Set manual scores from game state
+	s.ManualScore = [2]int{s.Game.PointsFor(0), s.Game.PointsFor(1)}
+
+	// Initialize analysis bag from current game state
+	s.AnalysisBag = make(map[string]int)
+	alph = s.LD.TileMapping()
+	dist := s.LD.Distribution()
+	for ml, count := range dist {
+		letter := alph.Letter(tilemapping.MachineLetter(ml))
+		s.AnalysisBag[letter] = int(count)
+	}
+
+	// Remove tiles already played from the bag
+	for i := 0; i < 2; i++ {
+		rack := s.Game.RackFor(i).TilesOn()
+		for _, tile := range rack {
+			letter := alph.Letter(tile)
+			if s.AnalysisBag[letter] > 0 {
+				s.AnalysisBag[letter]--
+			}
+		}
+	}
+
+	// Remove tiles on board from the bag
+	for rr := 0; rr < 15; rr++ {
+		for cc := 0; cc < 15; cc++ {
+			ml := board.GetLetter(rr, cc)
+			if ml != 0 {
+				letter := alph.Letter(ml)
+				if s.AnalysisBag[letter] > 0 {
+					s.AnalysisBag[letter]--
+				}
+			}
+		}
+	}
+
+	// Set manual racks from current player racks (if available)
+	for i := 0; i < 2; i++ {
+		rack := s.Game.RackFor(i).TilesOn()
+		var rackStr strings.Builder
+		for _, tile := range rack {
+			rackStr.WriteString(alph.Letter(tile))
+		}
+		s.ManualRack[i] = rackStr.String()
+	}
+
+	// Enable analysis-friendly settings
+	s.Game.SetChallengeRule(pb.ChallengeRule_VOID) // Accept phonies for exploration
+
+	// Clear undo/redo stacks for fresh analysis
+	s.manualUndo = nil
+	s.manualRedo = nil
+	s.manualPlyRacks = nil
+}
+
 // HistRow is a lightweight move/event record for UI scoresheet.
 type HistRow struct {
 	Ply    int
@@ -539,8 +613,14 @@ func (s *Session) AIMove(mode AIMode, simIters, simPlies, topK, simThreads int) 
 	pi := s.Game.PlayerOnTurn()
 	p := int(pi)
 	rack := s.Game.RackFor(pi)
-	// Allow exchange only if there are tiles left in the bag
-	exchAllowed := s.Game.Bag().TilesRemaining() >= 1
+
+	// Calculate proper exchange limits following Macondo's pattern
+	oppRack := s.Game.RackFor(s.Game.NextPlayer())
+	unseen = int(oppRack.NumTiles()) + s.Game.Bag().TilesRemaining()
+	exchAllowed := unseen-game.RackTileLimit >= s.Game.ExchangeLimit()
+
+	// Set the maximum tiles that can be exchanged based on bag contents
+	s.sp.MoveGenerator().SetMaxCanExchange(game.MaxCanExchange(unseen-game.RackTileLimit, s.Game.ExchangeLimit()))
 	s.sp.MoveGenerator().GenAll(rack, exchAllowed)
 	plays := s.sp.MoveGenerator().(*movegen.GordonGenerator).Plays()
 	if len(plays) == 0 {
@@ -843,10 +923,14 @@ func (s *Session) perfectEndgame() (*move.Move, error) {
 
 // perfectPreendgame uses Macondo's preendgame solver when exactly 8 tiles remain unseen
 func (s *Session) perfectPreendgame() (*move.Move, error) {
-	// Create bot configuration using existing session config
+	// Create bot configuration using existing session config with endgame enabled
 	botConfig := &bot.BotConfig{
 		Config: *s.CFG,  // Use session's Macondo config
 	}
+
+	// Ensure endgame is enabled for preendgame scenarios
+	botConfig.Config.Set("endgame_plies", 10)
+	botConfig.Config.Set("use_endgame", true)
 
 	// Create BotTurnPlayer with SIMMING_BOT (has preendgame capabilities)
 	botPlayer, err := bot.NewBotTurnPlayerFromGame(s.Game, botConfig, pb.BotRequest_SIMMING_BOT)
@@ -854,8 +938,9 @@ func (s *Session) perfectPreendgame() (*move.Move, error) {
 		return nil, fmt.Errorf("failed to create preendgame bot: %w", err)
 	}
 
-	// Create context with custom logger for capturing logs
-	ctx := context.Background()
+	// Create context with timeout to prevent hanging
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
 	if s.logWriter != nil {
 		// Create a logger that writes to our log buffer
 		logger := zerolog.New(s.logWriter).With().
@@ -881,19 +966,30 @@ func (s *Session) perfectPreendgame() (*move.Move, error) {
 			time.Now().Format(time.RFC3339))))
 	}
 
+	startTime := time.Now()
 	move, err := botPlayer.BestPlay(ctx)
+	duration := time.Since(startTime)
 
 	if s.logWriter != nil {
 		if err != nil {
-			s.logWriter.Write([]byte(fmt.Sprintf(`{"time":"%s","level":"error","component":"preendgame","message":"BestPlay() failed","error":"%s"}`+"\n",
-				time.Now().Format(time.RFC3339), err.Error())))
+			// Check if it was a timeout
+			if ctx.Err() == context.DeadlineExceeded {
+				s.logWriter.Write([]byte(fmt.Sprintf(`{"time":"%s","level":"error","component":"preendgame","message":"BestPlay() timed out after %v","duration":"%s"}`+"\n",
+					time.Now().Format(time.RFC3339), duration, duration.String())))
+			} else {
+				s.logWriter.Write([]byte(fmt.Sprintf(`{"time":"%s","level":"error","component":"preendgame","message":"BestPlay() failed","error":"%s","duration":"%s"}`+"\n",
+					time.Now().Format(time.RFC3339), err.Error(), duration.String())))
+			}
 		} else {
-			s.logWriter.Write([]byte(fmt.Sprintf(`{"time":"%s","level":"info","component":"preendgame","message":"BestPlay() completed successfully","move":"%s"}`+"\n",
-				time.Now().Format(time.RFC3339), move.String())))
+			s.logWriter.Write([]byte(fmt.Sprintf(`{"time":"%s","level":"info","component":"preendgame","message":"BestPlay() completed successfully","move":"%s","duration":"%s"}`+"\n",
+				time.Now().Format(time.RFC3339), move.String(), duration.String())))
 		}
 	}
 
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("preendgame solver timed out after %v", duration)
+		}
 		return nil, fmt.Errorf("preendgame solver failed: %w", err)
 	}
 

@@ -1,0 +1,13 @@
+{
+  "name": "pimp-macondo-e2e",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node check_ui.mjs"
+  },
+  "devDependencies": {
+    "puppeteer": "^23.4.1"
+  }
+}
+
