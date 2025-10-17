@@ -119,6 +119,7 @@
       <button id="matchAIMMovePlaceholder" style="display:none"></button>
       <select id="matchAIMode"><option value="static">Hasty</option><option value="sim">Sim</option></select>
       <label style="margin-left:6px">Hilos <input id="matchSimThreads" type="number" value="8" min="1" max="32" style="width:3.2rem"></label>
+      <label style="margin-left:10px;"><input type="checkbox" id="freeInputToggle"> Input libre</label>
       <label style="margin-left:6px"><input type="checkbox" id="showBotRack"> Ver atril Bot</label>
       <label>Orden rack
         <select id="matchRackOrder">
@@ -376,6 +377,7 @@
       // ===== Partida vs Bot =====
       let matchId = null;
       let matchMode = 'static';
+      let freeInputEnabled = false;
       let matchOnTurn = 0; // 0: Tú, 1: Bot (actualizado desde snapshot)
       let matchBoardEl = null;
       let matchBoardState = Array(225).fill(' ');
@@ -1122,7 +1124,7 @@
           // There are pending placements: remove the last one
           const last = keys[0];
           const tk = pendingPlacements[last];
-          if (tk){
+          if (tk && (!freeInputEnabled || isAnalysis)){
             const cleanTk = sanitizeToken(isPlacedBlankToken(tk) ? '?' : tk);
             if (cleanTk) rackTokensArr.push(cleanTk);
             rebuildRackCounts();
@@ -1158,7 +1160,7 @@
       function recallAll(){
         for(const k in pendingPlacements){
           const tk=pendingPlacements[k];
-          if(tk){
+          if(tk && (!freeInputEnabled || isAnalysis)){
             const cleanTk = sanitizeToken(isPlacedBlankToken(tk) ? '?' : tk);
             if (cleanTk) rackTokensArr.push(cleanTk);
           }
@@ -1266,6 +1268,33 @@
         };
         const placeIdx = findPlaceIdx();
         if (placeIdx < 0) { /* no room to place; ignore key without consuming */ return; }
+        const advanceCursor = (idx) => {
+          let r = Math.floor(idx / 15), c = idx % 15;
+          if (placeDir === 'H') c++; else r++;
+          while (r >= 0 && r < 15 && c >= 0 && c < 15) {
+            const i = r * 15 + c;
+            if (!matchBoardState[i].trim() && !pendingPlacements[i]) {
+              startCell = { row: r, col: c };
+              return;
+            }
+            if (placeDir === 'H') c++; else r++;
+          }
+        };
+        const freeInputActive = freeInputEnabled && !isAnalysis;
+        if (freeInputActive) {
+          let placeTk = token;
+          if (token === '?') {
+            const a = prompt('Asigna letra al comodín (A–Z, Ñ, CH, LL, RR):', 'A');
+            const mapped = placedTokenForBlankAssignment(a||'');
+            if (!mapped) { return; }
+            placeTk = mapped;
+          }
+          pendingPlacements[placeIdx] = placeTk;
+          advanceCursor(placeIdx);
+          setMatchRackText();
+          renderMatchBoard();
+          return;
+        }
         // Consume from rack (prefer exact token; if not found, try blank)
         const consume = (tok)=>{ if((rackCounts[tok]||0)>0){ rackCounts[tok]--; const i=rackTokensArr.indexOf(tok); if(i>=0) rackTokensArr.splice(i,1); return true;} return false; };
         if(!consume(token)){
@@ -1274,24 +1303,7 @@
           } else { return; }
         }
         pendingPlacements[placeIdx] = token;
-        // Advance cursor to next cell in current direction (skip occupied tiles)
-        let r = Math.floor(placeIdx / 15), c = placeIdx % 15;
-        // Move one step forward
-        if (placeDir === 'H') c++; else r++;
-        // Find next empty cell, skipping occupied tiles
-        while (r >= 0 && r < 15 && c >= 0 && c < 15) {
-          const i = r * 15 + c;
-          if (!matchBoardState[i].trim() && !pendingPlacements[i]) {
-            startCell = { row: r, col: c };
-            break;
-          }
-          // Skip occupied cell, continue forward
-          if (placeDir === 'H') c++; else r++;
-        }
-        // If we found a valid position, update cursor; otherwise keep at bounds
-        if (r >= 0 && r < 15 && c >= 0 && c < 15) {
-          startCell = { row: r, col: c };
-        }
+        advanceCursor(placeIdx);
         setMatchRackText(); renderMatchBoard();
       }
       function flushPendingKey(){
@@ -2098,7 +2110,15 @@
               const j = await res.json();
               if (j && j.error){ alert('Error: ' + j.error); e.preventDefault(); return; }
             } else {
-              const res = await fetch(`/matches/${matchId}/play`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({word, row:r, col:c, dir})});
+              const payload = {word, row:r, col:c, dir};
+              if (freeInputEnabled) {
+                payload.free_input = true;
+                payload.tokens = Object.keys(pendingPlacements)
+                  .map(k=>parseInt(k))
+                  .sort((a,b)=>a-b)
+                  .map(i=>pendingPlacements[i]);
+              }
+              const res = await fetch(`/matches/${matchId}/play`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
               const j = await res.json();
               if (j && j.error){ alert('Error: ' + j.error); e.preventDefault(); return; }
             }
@@ -2273,11 +2293,13 @@
             while (r-1>=0){ const i = (r-1)*15 + c; const tk = (matchBoardState[i]||' ').trim(); if(!tk) break; r--; }
           }
           const scanOrder = idxs.slice().sort((a,b)=> dir==='H' ? ((a%15)-(b%15)) : (Math.floor(a/15)-Math.floor(b/15)) );
-          const word = scanOrder.map(i=>pendingPlacements[i]).join('');
-          return { word, row: r, col: c, dir };
+          const tokens = scanOrder.map(i=>pendingPlacements[i]);
+          const word = tokens.join('');
+          return { word, row: r, col: c, dir, tokens };
         });
         const submitBtn = document.getElementById('matchSubmitPlay');
         if (submitBtn) submitBtn.disabled = true;
+        const freeFlag = freeInputEnabled && !isAnalysis;
         try{
           if (isAnalysis){
             let applied = false;
@@ -2291,6 +2313,7 @@
             if (!(await ensureOverwriteAllowed())) { return; }
             let ok = false, lastErr = '';
             for (const p of payloads){
+              if (freeFlag) { p.free_input = true; }
               const res = await fetch(`/matches/${matchId}/play`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(p)});
               const j = await res.json();
               if (!j || j.error){ lastErr = (j && j.error) || 'error'; continue; }
@@ -2566,6 +2589,14 @@
             if (matchId) {
               await refreshMatch();
             }
+          };
+        }
+        const freeToggle = document.getElementById('freeInputToggle');
+        if (freeToggle) {
+          freeInputEnabled = !!freeToggle.checked;
+          freeToggle.onchange = ()=>{
+            freeInputEnabled = !!freeToggle.checked;
+            if (!freeInputEnabled) rebuildRackCounts();
           };
         }
         // Submit with Enter: if focused on exchange input, do exchange; otherwise submit play

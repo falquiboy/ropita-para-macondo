@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -217,14 +218,24 @@ func (m *MatchHandlers) Play(w http.ResponseWriter, r *http.Request) {
 	// Note: Row/Col must have individual JSON tags; a combined declaration with
 	// a single tag string prevents proper decoding (would default to 0,0).
 	var in struct {
-		Word string `json:"word"`
-		Row  int    `json:"row"`
-		Col  int    `json:"col"`
-		Dir  string `json:"dir"`
+		Word      string   `json:"word"`
+		Row       int      `json:"row"`
+		Col       int      `json:"col"`
+		Dir       string   `json:"dir"`
+		Tokens    []string `json:"tokens"`
+		FreeInput bool     `json:"free_input"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
 		return
+	}
+	if in.FreeInput {
+		norm := normalizeWordToBrackets(in.Word)
+		mv := Move{Word: norm, Row: in.Row, Col: in.Col, Dir: strings.ToUpper(in.Dir)}
+		if err := m.prepareFreeInputRack(s, mv, in.Tokens); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 	_, err := s.PlayHuman(in.Word, matchCoords(in.Row, in.Col, in.Dir))
 	if err != nil {
@@ -806,6 +817,59 @@ func (m *MatchHandlers) TruncateAnalysis(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, m.serialize(s))
+}
+
+func (m *MatchHandlers) prepareFreeInputRack(s *match.Session, mv Move, tokens []string) error {
+	g := s.Game
+	if len(tokens) == 0 {
+		tokens = tokenizeRow(mv.Word)
+	}
+	var sb strings.Builder
+	for _, tk := range tokens {
+		tk = strings.TrimSpace(tk)
+		if tk == "" {
+			continue
+		}
+		if isBlankToken(tk) {
+			sb.WriteString("?")
+			continue
+		}
+		if strings.HasPrefix(tk, "[") && strings.HasSuffix(tk, "]") {
+			inner := tk[1 : len(tk)-1]
+			if inner == strings.ToLower(inner) {
+				sb.WriteString("?")
+			} else {
+				sb.WriteString("[" + strings.ToUpper(inner) + "]")
+			}
+			continue
+		}
+		sb.WriteString(strings.ToUpper(tk))
+	}
+	rackStr := strings.TrimSpace(sb.String())
+	if rackStr == "" {
+		return errors.New("no tiles placed for free input")
+	}
+	rack := tilemapping.RackFromString(rackStr, s.LD.TileMapping())
+	if rack == nil {
+		return fmt.Errorf("invalid tiles for free input: %s", rackStr)
+	}
+	on := int(g.PlayerOnTurn())
+	g.ThrowRacksInFor(on)
+	if err := g.SetRackForOnly(on, rack); err != nil {
+		return err
+	}
+	return nil
+}
+
+func isBlankToken(tk string) bool {
+	if tk == "" {
+		return false
+	}
+	if strings.HasPrefix(tk, "[") && strings.HasSuffix(tk, "]") {
+		inner := tk[1 : len(tk)-1]
+		return inner == strings.ToLower(inner)
+	}
+	return tk == strings.ToLower(tk) && tk != strings.ToUpper(tk)
 }
 
 // ApplyManual applies a manual move to the analysis board, updating score and history.
