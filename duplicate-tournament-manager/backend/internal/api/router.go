@@ -145,6 +145,8 @@ func Router(eng Engine) http.Handler {
 			mh.SetRackAnalysis(w, r)
 		case r.Method == http.MethodPost && strings.HasSuffix(p, "/set_rack"):
 			mh.SetRack(w, r)
+		case r.Method == http.MethodPost && strings.HasSuffix(p, "/analysis/truncate"):
+			mh.TruncateAnalysis(w, r)
 		case r.Method == http.MethodPost && strings.HasSuffix(p, "/analysis/apply"):
 			mh.ApplyManual(w, r)
 		case r.Method == http.MethodPost && strings.HasSuffix(p, "/analysis/undo"):
@@ -169,6 +171,8 @@ func Router(eng Engine) http.Handler {
 	static := http.FileServer(http.FS(sub))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
 		static.ServeHTTP(w, r)
 	})
 

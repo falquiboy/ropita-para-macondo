@@ -859,6 +859,10 @@ func findRootFile(name string) string {
     if _, err := os.Stat("lexica/" + name); err == nil { return "lexica/" + name }
     if _, err := os.Stat("../lexica/" + name); err == nil { return "../lexica/" + name }
     if _, err := os.Stat("../../lexica/" + name); err == nil { return "../../lexica/" + name }
+    // Try lexica/gaddag/ subfolder variants
+    if _, err := os.Stat("lexica/gaddag/" + name); err == nil { return "lexica/gaddag/" + name }
+    if _, err := os.Stat("../lexica/gaddag/" + name); err == nil { return "../lexica/gaddag/" + name }
+    if _, err := os.Stat("../../lexica/gaddag/" + name); err == nil { return "../../lexica/gaddag/" + name }
     // Try cwd/../.. resolved to absolute
     if wd, err := os.Getwd(); err == nil {
         base := wd
@@ -874,6 +878,33 @@ func findRootFile(name string) string {
         }
     }
     return ""
+}
+
+// removeTokensFromRack removes tiles from a rack string (used tiles from manual rack)
+func removeTokensFromRack(rack, toRemove string) string {
+	rackTokens := tokenizeRow(rack)
+	removeTokens := tokenizeRow(toRemove)
+
+	// Create a copy of rack tokens
+	remaining := make([]string, len(rackTokens))
+	copy(remaining, rackTokens)
+
+	// Remove each tile in toRemove from remaining
+	for _, tile := range removeTokens {
+		if tile == " " {
+			continue
+		}
+		// Find and remove first occurrence
+		for i, rt := range remaining {
+			if strings.EqualFold(rt, tile) {
+				// Remove this token
+				remaining = append(remaining[:i], remaining[i+1:]...)
+				break
+			}
+		}
+	}
+
+	return strings.Join(remaining, "")
 }
 
 // normalizeWordToBrackets collapses Spanish digraphs and internal letters to bracket-coded tokens.

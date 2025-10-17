@@ -9,14 +9,14 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
-	"runtime"
 	"sync"
 	"time"
 
-	aitp "github.com/domino14/macondo/ai/turnplayer"
 	"github.com/domino14/macondo/ai/bot"
+	aitp "github.com/domino14/macondo/ai/turnplayer"
 	"github.com/domino14/macondo/board"
 	mconfig "github.com/domino14/macondo/config"
 	"github.com/domino14/macondo/equity"
@@ -218,6 +218,84 @@ func (s *Session) RebuildToTurn(turn int) error {
 	return nil
 }
 
+// TruncateToTurn trims the game history to the provided turn (0..len(events))
+// and rebuilds the session state to resume play from that point.
+func (s *Session) TruncateToTurn(turn int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	hist := s.Game.History()
+	if hist == nil {
+		return errors.New("no history available")
+	}
+
+	events := hist.GetEvents()
+	if turn < 0 {
+		turn = 0
+	}
+	if turn > len(events) {
+		turn = len(events)
+	}
+	if turn == len(events) {
+		// Nothing to truncate.
+		return nil
+	}
+
+	// Drop trailing events and reset terminal metadata.
+	hist.Events = append([]*pb.GameEvent(nil), events[:turn]...)
+	hist.PlayState = pb.PlayState_PLAYING
+	hist.FinalScores = nil
+	hist.Winner = -1
+	hist.LastKnownRacks = nil
+
+	// Rebuild the underlying game from the trimmed history.
+	rules := s.Game.Rules()
+	ng, err := game.NewFromHistory(hist, rules, 0)
+	if err != nil {
+		return err
+	}
+	if err := ng.PlayToTurn(turn); err != nil {
+		return err
+	}
+	s.Game = ng
+
+	// Rebuild helpers (AI calculators) for the trimmed game state.
+	csc, _ := equity.NewCombinedStaticCalculator(s.Lexicon, s.CFG, equity.LeavesFilename, equity.PEGAdjustmentFilename)
+	s.csc = csc
+	s.sp, _ = aitp.NewAIStaticTurnPlayerFromGame(s.Game, s.CFG, []equity.EquityCalculator{csc})
+
+	// Trim fallback history if we were using it.
+	if len(s.hist) > turn {
+		s.hist = append([]HistRow(nil), s.hist[:turn]...)
+	}
+
+	// Reset analysis helpers to mirror current game state.
+	alph := s.Game.Alphabet()
+	for rr := 0; rr < 15; rr++ {
+		var sb strings.Builder
+		for cc := 0; cc < 15; cc++ {
+			ml := s.Game.Board().GetLetter(rr, cc)
+			if ml == 0 {
+				sb.WriteByte(' ')
+			} else {
+				sb.WriteString(alph.Letter(ml))
+			}
+		}
+		s.ManualBoardRows[rr] = sb.String()
+	}
+	s.ManualScore = [2]int{s.Game.PointsFor(0), s.Game.PointsFor(1)}
+	for i := 0; i < 2; i++ {
+		s.ManualRack[i] = s.Game.RackFor(i).String()
+	}
+	s.AnalysisTurn = turn
+	s.manualUndo = nil
+	s.manualRedo = nil
+	s.manualPlyRacks = nil
+	s.AnalysisBag = nil
+
+	return nil
+}
+
 // InitializeAnalysisFromGame initializes analysis mode from a loaded game state.
 // This is used when loading from GCG files to set up the analysis environment.
 func (s *Session) InitializeAnalysisFromGame() {
@@ -311,8 +389,23 @@ func NewSession(id, ruleset, kwgPath string) (*Session, error) {
 		ruleset = "OSPS49"
 	}
 	cfg := mconfig.DefaultConfig()
-	// Prefer MACONDO_DATA_PATH; otherwise try repo-relative defaults handled by macondo engine helpers
-	// Assume env was set by start_go_server.sh; otherwise, game.NewBasicGameRules will fail early.
+	// Set data-path to our working directory so that lexica/gaddag/ is found correctly
+	// Macondo will look for lexicons at: data-path + /lexica/gaddag/
+	if cfg.GetString("data-path") == "" {
+		if wd, err := os.Getwd(); err == nil {
+			// Use current working directory (backend/) as data-path
+			// This way Macondo will find lexica at: backend/lexica/gaddag/FILE2017.kwg
+			cfg.Set("data-path", wd)
+
+			// Also try to find letter distributions in Macondo's bundled data
+			macondonDataPath := filepath.Join(wd, ".gomodcache", "github.com", "domino14", "macondo@v0.11.2", "data")
+			if _, err := os.Stat(macondonDataPath); err == nil {
+				// Set strategy-params-path to Macondo's data directory for equity files, etc.
+				cfg.Set("strategy-params-path", filepath.Join(macondonDataPath, "strategy"))
+				cfg.Set("letter-distribution-path", filepath.Join(macondonDataPath, "letterdistributions"))
+			}
+		}
+	}
 
 	// Stage KWG into WGL cache directory name detection
 	lexName := baseLexiconName(kwgPath)
@@ -406,7 +499,7 @@ func (s *Session) PlayHuman(word string, c Coords) (*move.Move, error) {
 		log.Printf("total candidates: %d", len(plays))
 	}
 	targetDir := strings.ToUpper(c.Dir)
-	// First, try exact match on word and coordinates
+	// First, try exact match on word and coordinates in generated plays
 	for _, pm := range plays {
 		if pm.Action() != move.MoveTypePlay {
 			continue
@@ -430,9 +523,64 @@ func (s *Session) PlayHuman(word string, c Coords) (*move.Move, error) {
 			}
 		}
 	}
-	// Fallback: if exactly one candidate exists at those coordinates/direction, accept it
-	var only *move.Move
-	for _, pm := range plays {
+
+	// Not found in generated plays - try individual validation
+	// This handles valid moves with wildcards that weren't in the top-N generation
+	if os.Getenv("DEBUG_MATCH") == "1" {
+		log.Printf("move not in generated plays, attempting individual validation for %q at (%d,%d,%s)", word, c.Row, c.Col, c.Dir)
+	}
+
+	validated, err := s.validateSingleMove(word, c)
+	if err != nil {
+		if os.Getenv("DEBUG_MATCH") == "1" {
+			log.Printf("individual validation failed: %v", err)
+		}
+		return nil, fmt.Errorf("illegal move: %w", err)
+	}
+
+	if os.Getenv("DEBUG_MATCH") == "1" {
+		log.Printf("individual validation succeeded, playing move")
+	}
+
+	player := int(s.Game.PlayerOnTurn())
+	if err := s.Game.PlayMove(validated, true, 0); err != nil {
+		return nil, err
+	}
+	s.recordPlayEvent(player, validated)
+	s.maybeAutoChallenge()
+	return validated, nil
+}
+
+// validateSingleMove validates a specific move without relying on previous generation.
+// This allows valid wildcard moves that weren't in the top-N generated plays.
+// Strategy: Re-generate ALL moves exhaustively and search for exact match.
+func (s *Session) validateSingleMove(word string, c Coords) (*move.Move, error) {
+	rack := s.Game.RackFor(s.Game.PlayerOnTurn())
+	oppRack := s.Game.RackFor(s.Game.NextPlayer())
+	bagRemaining := s.Game.Bag().TilesRemaining()
+	unseen := int(oppRack.NumTiles()) + bagRemaining
+
+	// Use existing move generator but regenerate exhaustively
+	// (previous GenAll may have been limited by equity cutoffs)
+	exchAllowed := unseen-game.RackTileLimit >= s.Game.ExchangeLimit()
+
+	// Set max exchange properly
+	s.sp.MoveGenerator().SetMaxCanExchange(game.MaxCanExchange(unseen-game.RackTileLimit, s.Game.ExchangeLimit()))
+
+	// Generate all possible moves (this should include wildcard combinations)
+	s.sp.MoveGenerator().GenAll(rack, exchAllowed)
+	allPlays := s.sp.MoveGenerator().(*movegen.GordonGenerator).Plays()
+
+	if os.Getenv("DEBUG_MATCH") == "1" {
+		log.Printf("validateSingleMove: re-generated %d total plays (exhaustive, bag=%d, unseen=%d)",
+			len(allPlays), bagRemaining, unseen)
+	}
+
+	// Search exhaustively for exact match
+	targetDir := strings.ToUpper(c.Dir)
+	var candidatesAtCoords []*move.Move
+
+	for _, pm := range allPlays {
 		if pm.Action() != move.MoveTypePlay {
 			continue
 		}
@@ -442,29 +590,29 @@ func (s *Session) PlayHuman(word string, c Coords) (*move.Move, error) {
 			dir = "V"
 		}
 		if r == c.Row && col == c.Col && dir == targetDir {
-			if only != nil {
-				only = nil
-				break
+			tiles := strings.ReplaceAll(pm.TilesString(), ".", "")
+			candidatesAtCoords = append(candidatesAtCoords, pm)
+
+			if equalWord(tiles, word) {
+				if os.Getenv("DEBUG_MATCH") == "1" {
+					log.Printf("validateSingleMove: found exact match in exhaustive search")
+				}
+				return pm, nil
 			}
-			only = pm
 		}
 	}
-	if only != nil {
-		if os.Getenv("DEBUG_MATCH") == "1" {
-			log.Printf("fallback accepting candidate at coords; want=%q", word)
+
+	// No fallback - strict validation only
+	// Log what candidates were found for debugging
+	if os.Getenv("DEBUG_MATCH") == "1" && len(candidatesAtCoords) > 0 {
+		log.Printf("validateSingleMove: found %d candidates at coords but none matched %q:", len(candidatesAtCoords), word)
+		for i, pm := range candidatesAtCoords {
+			tiles := strings.ReplaceAll(pm.TilesString(), ".", "")
+			log.Printf("  candidate[%d]: %q (score=%d)", i, tiles, pm.Score())
 		}
-		player := int(s.Game.PlayerOnTurn())
-		if err := s.Game.PlayMove(only, true, 0); err != nil {
-			return nil, err
-		}
-		s.recordPlayEvent(player, only)
-		s.maybeAutoChallenge()
-		return only, nil
 	}
-	if os.Getenv("DEBUG_MATCH") == "1" {
-		log.Printf("no match for %q at (%d,%d,%s)", word, c.Row, c.Col, c.Dir)
-	}
-	return nil, errors.New("illegal move")
+
+	return nil, fmt.Errorf("move not valid: %q at (%d,%d,%s)", word, c.Row, c.Col, c.Dir)
 }
 
 // equalWord compares move tile strings but normalizes Spanish digraphs and brackets.
@@ -836,7 +984,7 @@ func (s *Session) appendHist(h HistRow) { s.hist = append(s.hist, h) }
 func (s *Session) perfectEndgame() (*move.Move, error) {
 	// Create bot configuration using existing session config
 	botConfig := &bot.BotConfig{
-		Config: *s.CFG,  // Use session's Macondo config
+		Config: *s.CFG, // Use session's Macondo config
 	}
 
 	// Create BotTurnPlayer with SIMMING_BOT (has endgame + preendgame + simulation)
@@ -925,7 +1073,7 @@ func (s *Session) perfectEndgame() (*move.Move, error) {
 func (s *Session) perfectPreendgame() (*move.Move, error) {
 	// Create bot configuration using existing session config with endgame enabled
 	botConfig := &bot.BotConfig{
-		Config: *s.CFG,  // Use session's Macondo config
+		Config: *s.CFG, // Use session's Macondo config
 	}
 
 	// Ensure endgame is enabled for preendgame scenarios

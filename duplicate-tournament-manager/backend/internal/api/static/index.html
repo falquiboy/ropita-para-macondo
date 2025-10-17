@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <!-- v2.0.9 - cursor always visible while typing -->
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Duplicate Tournament Manager</title>
@@ -8,23 +9,29 @@
       :root { --cell-size: 24px; --gap: 2px; --header-h: 18px; --row-label-nudge: -2px; }
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; }
       .row { display: flex; gap: 1rem; align-items: center; margin-bottom: 0.5rem; }
-      .grid { display: grid; grid-template-columns: repeat(15, var(--cell-size)); gap: var(--gap); margin-top: 0.25rem; }
-      .cell { position: relative; width: var(--cell-size); height: var(--cell-size); box-sizing: border-box; background: #f2f2f2; border: 1px solid #ddd; font-size: 12px; display: flex; align-items: center; justify-content: center; }
+      .grid { display: grid; grid-template-columns: repeat(15, var(--cell-size)); gap: var(--gap); margin-top: 0.25rem; user-select: none; -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; }
+      .cell { position: relative; width: var(--cell-size); height: var(--cell-size); box-sizing: border-box; background: #f2f2f2; border: 1px solid #ddd; font-size: 12px; display: flex; align-items: center; justify-content: center; user-select: none; -webkit-user-select: none; }
       .cell.start { outline: none; }
       .cell .dir-arrow {
         position: absolute; inset: 0;
         display: flex; align-items: center; justify-content: center;
-        font-size: 16px; line-height: 1; color: #3b82f6; font-weight: 600;
+        font-size: 18px; line-height: 1; color: #2563eb; font-weight: 700;
         pointer-events: none;
+        text-shadow: 0 0 2px rgba(255,255,255,0.8);
+        z-index: 10;
       }
       /* Bonus tags */
       .cell .bonus { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 700; color: #333; opacity: 0.7; }
+      /* Hide bonus label when cursor is active on this cell */
+      .cell.start .bonus { opacity: 0; }
       /* Slightly more saturated bonus colors */
       .cell.tw { background: #fca5a5; }
       .cell.dw { background: #fbcfe8; }
       .cell.tl { background: #bfdbfe; }
       .cell.dl { background: #a5f3fc; }
       .cell.center .star { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #f59e0b; font-size: 14px; opacity: 0.9; }
+      /* Hide star when cursor is active on center cell */
+      .cell.start.center .star { opacity: 0; }
       /* Occupied cell highlight (cream background) */
       .cell.occ { background: #fff4d6; border-color: #d2b48c; }
       /* Board tile letter + value (subscript) */
@@ -112,6 +119,7 @@
       <button id="matchAIMMovePlaceholder" style="display:none"></button>
       <select id="matchAIMode"><option value="static">Hasty</option><option value="sim">Sim</option></select>
       <label style="margin-left:6px">Hilos <input id="matchSimThreads" type="number" value="8" min="1" max="32" style="width:3.2rem"></label>
+      <label style="margin-left:6px"><input type="checkbox" id="showBotRack"> Ver atril Bot</label>
       <label>Orden rack
         <select id="matchRackOrder">
           <option value="none">— Orden —</option>
@@ -154,7 +162,7 @@
           <div id="boardBadge" class="badge-final" style="display:none">Finalizada</div>
         </div>
         <!-- Rack placed just below the board -->
-        <div class="rack" style="margin-top:6px">Rack: <div id="matchRack" class="rack" style="margin-left:6px"></div></div>
+        <div class="rack" style="margin-top:6px"><span id="rackLabel">Rack:</span> <div id="matchRack" class="rack" style="margin-left:6px"></div></div>
         <!-- Core in-game controls directly under rack -->
         <div class="row" style="margin:6px 0; flex-wrap: wrap">
           <button id="matchShuffle">Shuffle Rack</button>
@@ -225,11 +233,10 @@
       </div>
       <div id="analysisSidebar" style="margin-left:8px; min-width: 260px; width: 260px; flex: 0 0 auto; display:none">
         <h3 style="margin:6px 0 4px">Análisis manual</h3>
-        <div style="font-size:12px; color:#374151; margin-bottom:6px">Edite los atriles (parcial o total) y coloque jugadas directamente. Se aceptan phonies con confirmación.</div>
+        <div style="font-size:12px; color:#374151; margin-bottom:6px">Edite el atril del jugador en turno (parcial o total) y coloque jugadas directamente. Se aceptan phonies con confirmación.</div>
         <div style="display:flex; flex-direction:column; gap:6px">
-          <label>Rack Tú <input id="anRackYou" type="text" placeholder="ej: A?KÇ" style="width:100%; text-transform:uppercase"></label>
-          <label>Rack Bot <input id="anRackBot" type="text" placeholder="ej: EEIÑLL" style="width:100%; text-transform:uppercase"></label>
-          <button id="anApplyRacks">Actualizar atriles</button>
+          <label><span id="anRackLabel">Atril en turno</span> <input id="anRackOnTurn" type="text" placeholder="ej: A?EEIÑLL" style="width:100%; text-transform:uppercase"></label>
+          <button id="anApplyRacks">Actualizar atril</button>
         </div>
       </div>
     </div>
@@ -569,8 +576,8 @@
           const prevB = cells[i].querySelector('.bonus'); if (prevB) prevB.remove();
           const prevS = cells[i].querySelector('.star'); if (prevS) prevS.remove();
           cells[i].classList.remove('tw','dw','tl','dl','center','occ','last');
-          // add arrow on start cell (typing aid only). Hide once there is any pending placement or if occupied
-          if (startCell && !hasPending){
+          // add arrow on start cell (typing cursor shows position and direction)
+          if (startCell){
             const si = startCell.row*15 + startCell.col;
             if (i === si && !(placed || (tk && tk.trim()))){
               cells[i].classList.add('start');
@@ -1111,15 +1118,41 @@
       }
       function recallLast(){
         const keys = Object.keys(pendingPlacements).map(k=>parseInt(k)).sort((a,b)=>b-a);
-        if(!keys.length) return;
-        const last = keys[0];
-        const tk = pendingPlacements[last];
-        if (tk){
-          const cleanTk = sanitizeToken(isPlacedBlankToken(tk) ? '?' : tk);
-          if (cleanTk) rackTokensArr.push(cleanTk);
-          rebuildRackCounts();
+        if(keys.length > 0) {
+          // There are pending placements: remove the last one
+          const last = keys[0];
+          const tk = pendingPlacements[last];
+          if (tk){
+            const cleanTk = sanitizeToken(isPlacedBlankToken(tk) ? '?' : tk);
+            if (cleanTk) rackTokensArr.push(cleanTk);
+            rebuildRackCounts();
+          }
+          delete pendingPlacements[last];
+          // Move cursor back to the cell where we just removed the tile
+          if (startCell) {
+            const row = Math.floor(last / 15);
+            const col = last % 15;
+            startCell = { row, col };
+          }
+        } else if (startCell) {
+          // No pending placements: just move cursor backward in current direction
+          let r = startCell.row, c = startCell.col;
+          // Move backward in current direction
+          if (placeDir === 'H') c--; else r--;
+          // Find previous empty cell (skip occupied cells, allow going backward indefinitely)
+          while (r >= 0 && r < 15 && c >= 0 && c < 15) {
+            const i = r * 15 + c;
+            if (!matchBoardState[i].trim()) {
+              startCell = { row: r, col: c };
+              break;
+            }
+            if (placeDir === 'H') c--; else r--;
+          }
+          // If we went out of bounds, clamp to valid position
+          if (r >= 0 && r < 15 && c >= 0 && c < 15) {
+            startCell = { row: r, col: c };
+          }
         }
-        delete pendingPlacements[last];
         renderMatchBoard(); rackSelIdx.clear(); setMatchRackText();
       }
       function recallAll(){
@@ -1241,6 +1274,24 @@
           } else { return; }
         }
         pendingPlacements[placeIdx] = token;
+        // Advance cursor to next cell in current direction (skip occupied tiles)
+        let r = Math.floor(placeIdx / 15), c = placeIdx % 15;
+        // Move one step forward
+        if (placeDir === 'H') c++; else r++;
+        // Find next empty cell, skipping occupied tiles
+        while (r >= 0 && r < 15 && c >= 0 && c < 15) {
+          const i = r * 15 + c;
+          if (!matchBoardState[i].trim() && !pendingPlacements[i]) {
+            startCell = { row: r, col: c };
+            break;
+          }
+          // Skip occupied cell, continue forward
+          if (placeDir === 'H') c++; else r++;
+        }
+        // If we found a valid position, update cursor; otherwise keep at bounds
+        if (r >= 0 && r < 15 && c >= 0 && c < 15) {
+          startCell = { row: r, col: c };
+        }
         setMatchRackText(); renderMatchBoard();
       }
       function flushPendingKey(){
@@ -1318,7 +1369,12 @@
           // buffer current key; will auto-flush shortly if not merged
           pendingKey = ch;
           if (pendingKeyTimer){ clearTimeout(pendingKeyTimer); }
-          pendingKeyTimer = setTimeout(()=>{ flushPendingKey(); }, 450);
+          // Only delay for C, L, R (potential digraphs CH, LL, RR); place other letters immediately
+          if (ch === 'C' || ch === 'L' || ch === 'R'){
+            pendingKeyTimer = setTimeout(()=>{ flushPendingKey(); }, 450);
+          } else {
+            flushPendingKey();
+          }
           e.preventDefault();
         }
       });
@@ -1337,10 +1393,17 @@
         setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}${isAnalysis?' (Análisis)':''}`); initMatchBoard(); document.getElementById('analysisSidebar').style.display = isAnalysis ? 'block' : 'none'; updateToggleUI(true); window._viewMode='analysis'; applyHistoryViewMode(); await refreshUnseen(); await refreshHistory(); updateEndgameUI(j); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } clearBotLogs(); startLogStream(); }
       async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); isAnalysis = !!j.analysis; matchOnTurn = Number(j.turn||0)|0; window._ruleset = j.ruleset||window._ruleset||'OSPS49'; window._lexicon = j.lexicon||window._lexicon||''; window._currentRack = (matchOnTurn===0? (j.rack_you||j.rack||'') : (j.rack_bot||''));
         // Preserve user's custom rack order in vs-bot mode
-        const preserveOrder = !isAnalysis && rackTokensArr && rackTokensArr.length > 0;
+        const preserveOrder = !isAnalysis && matchOnTurn === 0 && rackTokensArr && rackTokensArr.length > 0;
         const userOrder = preserveOrder ? [...rackTokensArr] : null;
 
-        rackTokensArr = tokensFromBracketStr(isAnalysis ? (window._currentRack||'') : (j.rack_you||j.rack||'')); rebuildRackCounts();
+        // In sim mode (vs-bot), show bot's rack when it's bot's turn (if user enabled the toggle)
+        const isBotTurn = !isAnalysis && matchOnTurn === 1;
+    const showBotRackToggle = document.getElementById('showBotRack')?.checked || false;
+    const analysisActiveNow = isAnalysis || (matchMode === 'sim' && showBotRackToggle);
+    const showBotRack = isBotTurn && matchMode === 'sim' && showBotRackToggle;
+    const rackSource = isAnalysis ? (window._currentRack||'') : (showBotRack ? (j.rack_bot||'') : (j.rack_you||j.rack||''));
+    console.log('[DEBUG] refreshMatch - isBotTurn:', isBotTurn, 'matchMode:', matchMode, 'showBotRackToggle:', showBotRackToggle, 'analysisActive:', analysisActiveNow, 'showBotRack:', showBotRack, 'rackSource:', rackSource, 'j.rack_bot:', j.rack_bot, 'j.rack_you:', j.rack_you);
+        rackTokensArr = tokensFromBracketStr(rackSource); rebuildRackCounts();
 
         // In vs-bot mode, try to preserve user's tile arrangement
         if (preserveOrder && userOrder) {
@@ -1366,11 +1429,102 @@
           // Analysis mode or first time - apply saved order preference
           try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
         }
+
+        // Update rack label to indicate whose rack is shown
+        const rackLabel = document.getElementById('rackLabel');
+        if (rackLabel) {
+          if (showBotRack) {
+            rackLabel.textContent = 'Rack Bot:';
+            rackLabel.style.color = '#dc2626'; // red color to indicate bot's rack
+            rackLabel.style.fontWeight = '600';
+          } else {
+            rackLabel.textContent = 'Rack:';
+            rackLabel.style.color = '';
+            rackLabel.style.fontWeight = '';
+          }
+        }
+
+        // Update analysis sidebar rack label to show whose turn it is
+        const anRackLabel = document.getElementById('anRackLabel');
+        const anRackInput = document.getElementById('anRackOnTurn');
+        if (anRackLabel) {
+          const playerOnTurn = isAnalysis ? (tnTurn % 2) : matchOnTurn;
+          if (playerOnTurn === 0) {
+            anRackLabel.textContent = 'Atril en turno (Tú)';
+            anRackLabel.style.color = '#059669'; // green
+          } else {
+            anRackLabel.textContent = 'Atril en turno (Bot)';
+            anRackLabel.style.color = '#dc2626'; // red
+          }
+          // Update input to show current rack for player on turn
+          if (anRackInput) {
+            const rackValue = (playerOnTurn === 0 ? (j.rack_you||j.rack||'') : (j.rack_bot||''));
+            console.log('[refreshMatch] Auto-filling rack input:', {
+              playerOnTurn: playerOnTurn,
+              rackValue: rackValue,
+              j_rack_you: j.rack_you,
+              j_rack_bot: j.rack_bot,
+              j_rack: j.rack
+            });
+            anRackInput.value = rackValue;
+          }
+        }
+
         setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); if (j.bonus_rows) matchBonusRows = j.bonus_rows; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '');
-        document.getElementById('analysisSidebar').style.display = isAnalysis ? 'block' : 'none'; updateToggleUI(true); if(!window._viewMode) window._viewMode='analysis'; applyHistoryViewMode();
-        try {
-          const s = j.score || [0,0];
-          window.historyScore = s;
+    const nav = document.getElementById('turnNav');
+    const tnRacks = document.getElementById('tnRacks');
+    const analysisSidebar = document.getElementById('analysisSidebar');
+    const sidebar = document.getElementById('historySidebar');
+    const turnMoves = document.getElementById('turnMoves');
+    const hist = document.getElementById('matchHistory');
+    const isOver = String(j.play_state||'').toUpperCase().includes('GAME_OVER');
+    const navActive = analysisActiveNow || isOver;
+
+    if (analysisSidebar) analysisSidebar.style.display = navActive ? 'block' : 'none';
+    if (nav) nav.style.display = navActive ? 'flex' : 'none';
+    if (tnRacks) tnRacks.style.display = navActive ? 'block' : 'none';
+
+    if (navActive) {
+      if (!window._origTurnMovesParent) window._origTurnMovesParent = turnMoves?.parentElement || null;
+      if (!window._origTurnNavParent) window._origTurnNavParent = nav?.parentElement || null;
+      if (!window._origHistoryParent) window._origHistoryParent = hist?.parentElement || null;
+      if (sidebar && turnMoves && hist && turnMoves.parentElement !== sidebar) {
+        sidebar.insertBefore(turnMoves, hist);
+        turnMoves.style.maxHeight = `calc(24px*20 + 19*2px)`;
+        turnMoves.style.overflowY = 'auto';
+      }
+      if (sidebar && nav && nav.parentElement !== sidebar) {
+        sidebar.insertBefore(nav, hist);
+        nav.style.marginTop = '6px';
+      }
+      const tnRackYou = document.getElementById('tnRackYou');
+      const tnRackBot = document.getElementById('tnRackBot');
+      if (tnRackYou) tnRackYou.textContent = String(j.rack_you || j.rack || '');
+      if (tnRackBot) tnRackBot.textContent = String(j.rack_bot || '');
+      window._relocated = true;
+      if (!window._viewMode) window._viewMode = 'analysis';
+      applyHistoryViewMode();
+      updateToggleUI(true);
+      await syncTurnNavData(j);
+      await genTurnMoves();
+    } else if (window._relocated) {
+      if (window._origTurnMovesParent && turnMoves && turnMoves.parentElement !== window._origTurnMovesParent) {
+        window._origTurnMovesParent.appendChild(turnMoves);
+        turnMoves.style.maxHeight = '';
+        turnMoves.style.overflowY = '';
+      }
+      if (window._origTurnNavParent && nav && nav.parentElement !== window._origTurnNavParent) {
+        window._origTurnNavParent.appendChild(nav);
+        nav.style.marginTop = '';
+      }
+      if (tnRacks) tnRacks.style.display = 'none';
+      window._relocated = false;
+      updateToggleUI(false);
+    }
+
+    try {
+      const s = j.score || [0,0];
+      window.historyScore = s;
           const base = window.historyBaseNames || { left:'Isaac', right:'Macondo' };
           const modeSel = document.getElementById('matchAIMode');
           const sel = String(modeSel?.value||'').toLowerCase();
@@ -1386,46 +1540,7 @@
             if (rb && !rb.value) rb.value = window._anRacks.bot||'';
           }
         } catch(_){ }
-        pendingPlacements={}; startCell=null; placeDir='H'; renderMatchBoard(); await refreshUnseen(); await refreshHistory(); updateEndgameUI(j); if (isAnalysis && window._viewMode==='analysis') { await genTurnMoves(); }
-        // Turn navigation visible on GAME_OVER + relocate analysis to sidebar
-        try{
-          const isOver = String(j.play_state||'').toUpperCase().includes('GAME_OVER');
-          const nav = document.getElementById('turnNav');
-          const shouldRelocate = (isOver);
-          if (nav) nav.style.display = (shouldRelocate? 'flex' : 'none');
-          if (shouldRelocate){
-            if (isOver) await initTurnNav();
-            const tnRacks = document.getElementById('tnRacks'); if (tnRacks) tnRacks.style.display = (shouldRelocate? 'block':'none');
-            // Lazy-init original parents so we can restore cuando se cree otra partida
-            if (!window._origTurnMovesParent){ window._origTurnMovesParent = document.getElementById('turnMoves')?.parentElement || null; }
-            if (!window._origTurnNavParent){ window._origTurnNavParent = nav.parentElement || null; }
-            if (!window._origHistoryParent){ window._origHistoryParent = document.getElementById('matchHistory')?.parentElement || null; }
-            const sidebar = document.getElementById('historySidebar');
-            const turnMoves = document.getElementById('turnMoves');
-            const hist = document.getElementById('matchHistory');
-            if (sidebar && turnMoves && hist){
-              sidebar.appendChild(turnMoves);
-              turnMoves.style.maxHeight = `calc(24px*20 + 19*2px)`;
-              turnMoves.style.overflowY = 'auto';
-              sidebar.appendChild(nav);
-              nav.style.marginTop = '6px';
-              window._relocated = true;
-              if (!window._viewMode) window._viewMode = 'analysis';
-              applyHistoryViewMode();
-              if (window._viewMode==='analysis') { await genTurnMoves(); }
-              updateToggleUI(true);
-            }
-          } else if (!shouldRelocate && window._relocated){
-            // Restore original layout when starting a new match
-            const turnMoves = document.getElementById('turnMoves');
-            const hist = document.getElementById('matchHistory');
-            if (window._origTurnMovesParent && turnMoves){ window._origTurnMovesParent.appendChild(turnMoves); }
-            if (window._origTurnNavParent && nav){ window._origTurnNavParent.appendChild(nav); }
-            if (hist){ hist.style.display = 'block'; }
-            window._relocated = false;
-            updateToggleUI(false);
-          }
-        }catch(_){ }
+    pendingPlacements={}; startCell=null; placeDir='H'; renderMatchBoard(); await refreshUnseen(); await refreshHistory(); updateEndgameUI(j);
         // Auto-cierre: si el usuario se quedó sin fichas y la bolsa está en 0, y el turno es del Bot,
         // emitimos automáticamente un PASS del Bot para formalizar el cierre.
         try{
@@ -1594,6 +1709,10 @@
           const root = document.getElementById('turnMoves'); if (!root) return;
           root.style.display = 'block';
           root.innerHTML = '<em>Generando…</em>';
+          tnSelPos = -1;
+          previewPlacements = {};
+          lastHighlight = null;
+          renderMatchBoard();
           let j = null;
           if (isAnalysis){
             // Build board rows from current state and choose rack according to onturn
@@ -1675,6 +1794,7 @@
             const tb = document.getElementById('tnTable');
             if (tb){ tb.querySelectorAll('tbody tr').forEach((tr,pos)=>{ tr.onclick=()=>{ tnSelPos = pos; previewSelectedMove(); highlightSelectedRow(); }; }); }
           } catch(_) { }
+          focusTurnMovesPanel();
           // No auto-select: keep board as initial state until user presses ArrowDown
         }catch(e){ console.error('genTurnMoves failed', e); }
       }
@@ -1710,8 +1830,11 @@
       async function genTurnMovesSim(){
         try{
           const root = document.getElementById('turnMoves'); if (!root) return; root.style.display='block'; root.innerHTML='<em>Simulando…</em>';
+          tnSelPos = -1;
+          previewPlacements = {};
+          lastHighlight = null;
           // Ensure the board is on the initial state of this turn (clear previews) before sim
-          previewPlacements = {}; lastHighlight = null; renderMatchBoard();
+          renderMatchBoard();
           if (!tnPos) { root.innerHTML = '<em>Sin posición</em>'; return; }
           const threads = Math.max(1, parseInt(document.getElementById('matchSimThreads')?.value||'1',10)||1);
           const qs = new URLSearchParams({ mode:'sim', iters:'2000', plies:'5', topK:'75', threads:String(threads) });
@@ -1758,6 +1881,7 @@
           root.innerHTML = `<div style=\"margin-bottom:4px;color:#374151;font-size:12px\">Jugadas (Sim): ${all.length}</div>`+
             `<table id=\"tnTable\" style=\"border-collapse:collapse;width:100%;font-size:12px\"><thead><tr style=\"background:#f8fafc\"><th>#</th><th>Score</th><th>Win%</th><th>Equity</th><th>Rk(Eq)</th><th>Coord</th><th>Palabra</th><th>Leave</th></tr></thead><tbody>${rows||''}</tbody></table>`;
           try { const tb=document.getElementById('tnTable'); if(tb){ tb.querySelectorAll('tbody tr').forEach((tr,pos)=>{ tr.onclick=()=>{ tnSelPos = pos; previewSelectedMove(); highlightSelectedRow(); }; }); } } catch(_){ }
+          focusTurnMovesPanel();
           // No auto-select after sim either; keep initial state previewless
         }catch(e){ console.error('genTurnMovesSim failed', e); }
       }
@@ -1808,9 +1932,99 @@
           const sel = rows[tnSelPos]; if (sel) sel.scrollIntoView({block:'nearest'});
         }catch(_){ }
       }
+      const analysisModeActive = () => (isAnalysis || (matchMode === 'sim' && document.getElementById('showBotRack')?.checked));
+      function focusTurnMovesPanel(){
+        try{
+          const panel = document.getElementById('turnMoves');
+          if (!panel) return;
+          panel.scrollTop = 0;
+          const target = panel.querySelector('tbody tr.sel') || panel.querySelector('tbody tr');
+          if (target){
+            if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex','-1');
+            target.focus({preventScroll:true});
+          } else {
+            if (!panel.hasAttribute('tabindex')) panel.setAttribute('tabindex','-1');
+            panel.focus({preventScroll:true});
+          }
+        }catch(_){ }
+      }
+      async function syncTurnNavData(matchData){
+        if (!matchId) return;
+        try{
+          const ev = await (await fetch(`/matches/${matchId}/events`)).json();
+          const prev = tnEvents;
+          const cnt = Number(ev?.count||0) || 0;
+          const tnWasEnd = (tnTurn >= prev);
+          tnEvents = cnt;
+          tnEventList = Array.isArray(ev.events) ? ev.events : [];
+          if (cnt !== prev) {
+            tnScoreCache.clear();
+            tnUnseenCache.clear();
+          }
+          if (tnWasEnd || tnTurn > tnEvents || tnTurn < 0) {
+            tnTurn = tnEvents;
+          }
+        }catch(e){
+          console.warn('syncTurnNavData failed', e);
+        }
+        const meta = document.getElementById('tnMeta');
+        if (meta){
+          const total = tnEvents || 0;
+          const cur = Math.max(0, tnTurn || 0);
+          const onTurnPlayer = (matchData && typeof matchData.turn === 'number') ? matchData.turn : (matchOnTurn ?? 0);
+          const who = (onTurnPlayer === 0) ? 'Tú' : 'Bot';
+          meta.textContent = `Turno ${cur}/${total} · En turno: ${who}`;
+        }
+        if (matchData){
+          const tnRackYou = document.getElementById('tnRackYou');
+          const tnRackBot = document.getElementById('tnRackBot');
+          if (tnRackYou) tnRackYou.textContent = String(matchData.rack_you || matchData.rack || '');
+          if (tnRackBot) tnRackBot.textContent = String(matchData.rack_bot || '');
+        }
+      }
+      async function maybeRegenAnalysisMoves(matchData){
+        if (!analysisModeActive()) { return; }
+        await syncTurnNavData(matchData);
+        await genTurnMoves();
+      }
+      async function ensureOverwriteAllowed(){
+        if (!matchId) return true;
+        if (isAnalysis) return true;
+        if (!(matchMode === 'sim' && document.getElementById('showBotRack')?.checked)) return true;
+        if (!Number.isFinite(tnTurn) || !Number.isFinite(tnEvents)) return true;
+        if (tnTurn >= tnEvents) return true;
+        const remaining = tnEvents - tnTurn;
+        const turnLabel = tnTurn + 1;
+        const msg = remaining === 1
+          ? `Esta acción sobrescribirá la partida desde el turno ${turnLabel} y eliminará 1 jugada posterior. ¿Continuar?`
+          : `Esta acción sobrescribirá la partida desde el turno ${turnLabel} y eliminará ${remaining} jugadas posteriores. ¿Continuar?`;
+        if (!window.confirm(msg)) return false;
+        try{
+          const res = await fetch(`/matches/${matchId}/analysis/truncate`, {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ turn: tnTurn })
+          });
+          const j = await res.json();
+          if (!res.ok || (j && j.error)){
+            alert((j && j.error) || 'No se pudo preparar el turno para sobreescribir.');
+            return false;
+          }
+          await syncTurnNavData(j);
+          return true;
+        }catch(err){
+          console.error('truncate error', err);
+          alert('Error al preparar el turno para sobreescribir.');
+          return false;
+        }
+      }
       // Keyboard navigation for preview
-      document.addEventListener('keydown', (e)=>{
-        const nav = document.getElementById('turnNav'); if (!nav || nav.style.display !== 'flex') return;
+      document.addEventListener('keydown', async (e)=>{
+        const nav = document.getElementById('turnNav');
+        const navVisible = !!(nav && window.getComputedStyle(nav).display !== 'none');
+        const movesPanel = document.getElementById('turnMoves');
+        const movesVisible = !!(movesPanel && window.getComputedStyle(movesPanel).display !== 'none');
+        if (!(navVisible || movesVisible)) return;
         const ae = document.activeElement; const isEditing = (ae && ((ae.tagName === 'INPUT') || (ae.tagName === 'TEXTAREA') || (ae.tagName === 'SELECT') || ae.isContentEditable));
         if (isEditing) return;
         if (e.key === 'ArrowDown'){
@@ -1826,7 +2040,7 @@
         } else if (e.key === 'ArrowRight'){
           // Next turn or redo in analysis
           if (isAnalysis && window._viewMode==='analysis'){
-            fetch(`/matches/${matchId}/analysis/redo`, {method:'POST'}).then(async()=>{ await refreshMatch(); await refreshHistory(); await genTurnMoves(); });
+            fetch(`/matches/${matchId}/analysis/redo`, {method:'POST'}).then(async()=>{ await refreshMatch(); await refreshHistory(); await maybeRegenAnalysisMoves(); });
           } else {
             loadTurn(tnTurn+1);
           }
@@ -1834,11 +2048,65 @@
         } else if (e.key === 'ArrowLeft'){
           // Previous turn or undo in analysis
           if (isAnalysis && window._viewMode==='analysis'){
-            fetch(`/matches/${matchId}/analysis/undo`, {method:'POST'}).then(async()=>{ await refreshMatch(); await refreshHistory(); await genTurnMoves(); });
+            fetch(`/matches/${matchId}/analysis/undo`, {method:'POST'}).then(async()=>{ await refreshMatch(); await refreshHistory(); await maybeRegenAnalysisMoves(); });
           } else {
             loadTurn(tnTurn-1);
           }
           e.preventDefault();
+        } else if (e.key === 'Enter'){
+          // Apply previewed move
+          if (tnSelPos >= 0 && tnMoves && tnMoves[tnSelPos]){
+            const m = tnMoves[tnSelPos];
+            const typ = String(m.type||'').toUpperCase();
+            console.log('[Enter] Applying move:', m);
+            if (!isAnalysis){
+              const ok = await ensureOverwriteAllowed();
+              if (!ok){ e.preventDefault(); return; }
+            }
+            // Handle PASS
+            if (typ === 'PASS'){
+              if (isAnalysis){
+                await fetch(`/matches/${matchId}/analysis/apply`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({player: matchOnTurn|0, word:'', row:-1, col:-1, dir:'H', type:'PASS'})});
+              } else {
+                await fetch(`/matches/${matchId}/pass`, {method:'POST'});
+              }
+              await refreshMatch(); await refreshHistory();
+              await maybeRegenAnalysisMoves();
+              e.preventDefault();
+              return;
+            }
+            // Handle EXCHANGE
+            if (typ === 'EXCH' || typ === 'EXCHANGE'){
+              const tiles = String(m.word||'');
+              if (isAnalysis){
+                await fetch(`/matches/${matchId}/analysis/apply`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({player: matchOnTurn|0, word:tiles, row:-1, col:-1, dir:'H', type:'EXCHANGE'})});
+              } else {
+                await fetch(`/matches/${matchId}/exchange`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({tiles})});
+              }
+              await refreshMatch(); await refreshHistory();
+              await maybeRegenAnalysisMoves();
+              e.preventDefault();
+              return;
+            }
+            // Handle TILE_PLACEMENT (normal move)
+            const r = m.row|0, c = m.col|0;
+            const dir = String(m.dir||'H').toUpperCase();
+            const word = String(m.word||'');
+            if (isAnalysis){
+              const body = { player: matchOnTurn|0, word, row: r, col: c, dir };
+              const res = await fetch(`/matches/${matchId}/analysis/apply`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+              const j = await res.json();
+              if (j && j.error){ alert('Error: ' + j.error); e.preventDefault(); return; }
+            } else {
+              const res = await fetch(`/matches/${matchId}/play`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({word, row:r, col:c, dir})});
+              const j = await res.json();
+              if (j && j.error){ alert('Error: ' + j.error); e.preventDefault(); return; }
+            }
+            await refreshMatch(); await refreshHistory();
+            // Regenerate moves when analysis sidebar is active
+            await maybeRegenAnalysisMoves();
+            e.preventDefault();
+          }
         }
       });
       // Grouped renderer: both players in same row; per player show Coord, Word, Pts, Cum
@@ -1961,7 +2229,23 @@
         row.style.display='flex';
         const mode = window._viewMode || 'analysis';
         btn.textContent = (mode==='analysis') ? 'Ver Historial' : 'Ver Análisis';
-        btn.onclick = ()=>{ window._viewMode = (window._viewMode==='analysis') ? 'history' : 'analysis'; applyHistoryViewMode(); updateToggleUI(true); if (window._viewMode==='analysis') { genTurnMoves(); } };
+        btn.onclick = ()=>{
+          window._viewMode = (window._viewMode==='analysis') ? 'history' : 'analysis';
+          applyHistoryViewMode();
+          updateToggleUI(true);
+          if (window._viewMode==='analysis') {
+            // En modo vs-bot en vivo, sincronizar tnTurn con el turno actual del match
+            if (!isAnalysis && matchId) {
+              // Fetch current turn count to ensure we analyze the correct rack
+              fetch(`/matches/${matchId}/events`).then(r=>r.json()).then(ev=>{
+                tnTurn = Number(ev.count||0);
+                genTurnMoves();
+              }).catch(()=>genTurnMoves());
+            } else {
+              genTurnMoves();
+            }
+          }
+        };
       }
       async function submitPlay(){ if(!matchId) return; // indicator is for typing only; infer direction from placements
         // ensure any buffered key is flushed before submit
@@ -2004,6 +2288,7 @@
             }
             if (!applied){ alert('No se pudo aplicar la jugada'); return; }
           } else {
+            if (!(await ensureOverwriteAllowed())) { return; }
             let ok = false, lastErr = '';
             for (const p of payloads){
               const res = await fetch(`/matches/${matchId}/play`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(p)});
@@ -2020,7 +2305,14 @@
           if (submitBtn) submitBtn.disabled = false;
         }
       }
-      async function doPass(){ if(!matchId) return; const r = await fetch(`/matches/${matchId}/pass`, {method:'POST'}); const j = await r.json(); if(j.error){ alert(j.error); return;} await refreshMatch(); await refreshHistory(); }
+      async function doPass(){
+        if(!matchId) return;
+        if (!(await ensureOverwriteAllowed())) return;
+        const r = await fetch(`/matches/${matchId}/pass`, {method:'POST'});
+        const j = await r.json();
+        if(j.error){ alert(j.error); return;}
+        await refreshMatch(); await refreshHistory();
+      }
       async function doExchange(){
         if(!matchId) return;
         const inp = document.getElementById('matchExchangeTiles');
@@ -2028,6 +2320,7 @@
         if(!tiles) return;
         tiles = normalizeExchangeTiles(tiles);
         if (inp) inp.value = tiles; // reflect
+        if (!(await ensureOverwriteAllowed())) return;
         const res = await fetch(`/matches/${matchId}/exchange`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({tiles})});
         const j = await res.json();
         if(j.error){ alert(j.error); return; }
@@ -2176,8 +2469,8 @@
         try{ document.getElementById('matchHistoryRefreshTop').onclick=refreshHistory; }catch(_){}
         document.getElementById('matchSubmitPlay').onclick=submitPlay;
         const sg = document.getElementById('matchSaveGCG'); if (sg) sg.onclick = saveGCG;
-        const anU = document.getElementById('anUndo'); if (anU) anU.onclick = async ()=>{ if(!matchId) return; await fetch(`/matches/${matchId}/analysis/undo`, {method:'POST'}); await refreshMatch(); await refreshHistory(); if (window._viewMode==='analysis') await genTurnMoves(); };
-        const anR = document.getElementById('anRedo'); if (anR) anR.onclick = async ()=>{ if(!matchId) return; await fetch(`/matches/${matchId}/analysis/redo`, {method:'POST'}); await refreshMatch(); await refreshHistory(); if (window._viewMode==='analysis') await genTurnMoves(); };
+        const anU = document.getElementById('anUndo'); if (anU) anU.onclick = async ()=>{ if(!matchId) return; await fetch(`/matches/${matchId}/analysis/undo`, {method:'POST'}); await refreshMatch(); await refreshHistory(); if (window._viewMode==='analysis') await maybeRegenAnalysisMoves(); };
+        const anR = document.getElementById('anRedo'); if (anR) anR.onclick = async ()=>{ if(!matchId) return; await fetch(`/matches/${matchId}/analysis/redo`, {method:'POST'}); await refreshMatch(); await refreshHistory(); if (window._viewMode==='analysis') await maybeRegenAnalysisMoves(); };
         const mcA = document.getElementById('matchCreateAnalysis'); if (mcA) mcA.onclick = async ()=>{
           const kwgSel = document.getElementById('matchKwgPreset');
           const kwg = (kwgSel && kwgSel.value) ? kwgSel.value : '';
@@ -2198,21 +2491,65 @@
             if (sidebar && turnMoves && nav){ sidebar.appendChild(turnMoves); sidebar.appendChild(nav); nav.style.marginTop='6px'; }
             window._relocated = true; applyHistoryViewMode();
           }catch(_){ }
-          // Prellenar racks para generación inmediata
-          window._anRacks = { you: (j.rack_you||j.rack||''), bot: (j.rack_bot||'') };
-          const ry=document.getElementById('anRackYou'); const rb=document.getElementById('anRackBot');
-          if (ry && !ry.value) ry.value = window._anRacks.you||'';
-          if (rb && !rb.value) rb.value = window._anRacks.bot||'';
+          // Prellenar rack del jugador en turno
+          const rackOnTurnInput = document.getElementById('anRackOnTurn');
+          if (rackOnTurnInput && !rackOnTurnInput.value) {
+            const playerOnTurn = isAnalysis ? (tnTurn % 2) : 0; // En análisis nuevo, turno 0
+            const rackValue = (playerOnTurn === 0 ? (j.rack_you||j.rack||'') : (j.rack_bot||''));
+            console.log('[Analysis Init] Prefilling rack input:', {
+              playerOnTurn: playerOnTurn,
+              rackValue: rackValue,
+              j_rack_you: j.rack_you,
+              j_rack_bot: j.rack_bot,
+              j_rack: j.rack
+            });
+            rackOnTurnInput.value = rackValue;
+          }
           await refreshHistory();
           // Generar lista inicial de análisis
           await genTurnMoves();
         };
         const anBtn = document.getElementById('anApplyRacks'); if (anBtn) anBtn.onclick = async ()=>{
           if (!matchId) return;
-          const ry = document.getElementById('anRackYou'); const rb = document.getElementById('anRackBot');
-          if (ry){ await fetch(`/matches/${matchId}/analysis/set_rack`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({player:0, rack: ry.value||''})}); }
-          if (rb){ await fetch(`/matches/${matchId}/analysis/set_rack`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({player:1, rack: rb.value||''})}); }
+          const rackInput = document.getElementById('anRackOnTurn');
+          if (!rackInput || !rackInput.value.trim()) return;
+
+          // Determine player on turn (matchOnTurn is already set by refreshMatch)
+          const playerOnTurn = isAnalysis ? (tnTurn % 2) : matchOnTurn;
+          const endpoint = isAnalysis ? 'analysis/set_rack' : 'set_rack';
+
+          console.log('[anApplyRacks] About to send:', {
+            player: playerOnTurn,
+            rack: rackInput.value,
+            rackLength: rackInput.value.length,
+            endpoint: endpoint
+          });
+
+          await fetch(`/matches/${matchId}/${endpoint}`, {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({player: playerOnTurn, rack: rackInput.value||''})
+          });
+
           await refreshMatch();
+          // Regenerar tabla de análisis con el nuevo rack
+          // Check if analysis sidebar is visible (either in pure analysis mode or vs-bot with "Ver atril Bot" enabled)
+          const analysisSidebar = document.getElementById('analysisSidebar');
+          console.log('[anApplyRacks] After refreshMatch - analysisSidebar:', analysisSidebar, 'display:', analysisSidebar?.style.display);
+          if (analysisSidebar && analysisSidebar.style.display !== 'none') {
+            console.log('[anApplyRacks] Regenerating moves - isAnalysis:', isAnalysis, 'matchId:', matchId);
+            // Actualizar tnTurn con el turno actual
+            if (!isAnalysis && matchId) {
+              const ev = await (await fetch(`/matches/${matchId}/events`)).json();
+              tnTurn = Number(ev.count||0);
+              console.log('[anApplyRacks] Updated tnTurn:', tnTurn);
+            }
+            console.log('[anApplyRacks] Calling genTurnMoves()...');
+            await genTurnMoves();
+            console.log('[anApplyRacks] genTurnMoves() completed');
+          } else {
+            console.log('[anApplyRacks] Sidebar not visible, skipping move generation');
+          }
         };
         // Tiles map now displayed in sidebar and updated on refresh
         // Rack order change
@@ -2221,6 +2558,15 @@
           // cargar preferencia guardada
           try{ const saved = localStorage.getItem('rackOrder'); if(saved){ ordSel.value=saved; applyRackOrder(saved); } }catch(_){ }
           ordSel.onchange = ()=>{ const v=ordSel.value||'none'; try{ localStorage.setItem('rackOrder', v); }catch(_){ } applyRackOrder(v); };
+        }
+        // Show bot rack toggle
+        const showBotRackCheckbox = document.getElementById('showBotRack');
+        if (showBotRackCheckbox) {
+          showBotRackCheckbox.onchange = async ()=>{
+            if (matchId) {
+              await refreshMatch();
+            }
+          };
         }
         // Submit with Enter: if focused on exchange input, do exchange; otherwise submit play
         document.addEventListener('keydown', (e)=>{

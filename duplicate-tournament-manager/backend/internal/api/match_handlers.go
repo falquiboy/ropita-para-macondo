@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/rand"
 	"net/http"
 	"os"
@@ -29,9 +30,9 @@ import (
 
 // LogBuffer captures zerolog output and broadcasts to SSE clients
 type LogBuffer struct {
-	mu       sync.RWMutex
-	buffer   bytes.Buffer
-	clients  map[chan string]bool
+	mu        sync.RWMutex
+	buffer    bytes.Buffer
+	clients   map[chan string]bool
 	sessionID string
 }
 
@@ -95,14 +96,14 @@ type MatchHandlers struct {
 	byID map[string]*match.Session
 	// Log buffers for each session
 	logBuffers map[string]*LogBuffer
-	eng Engine
+	eng        Engine
 }
 
 func NewMatchHandlers(eng Engine) *MatchHandlers {
 	return &MatchHandlers{
-		byID: map[string]*match.Session{},
+		byID:       map[string]*match.Session{},
 		logBuffers: map[string]*LogBuffer{},
-		eng: eng,
+		eng:        eng,
 	}
 }
 
@@ -383,7 +384,7 @@ func (m *MatchHandlers) serialize(s *match.Session) map[string]any {
 	}
 	out["board_rows"] = rows
 	out["bonus_rows"] = bonus
-	// rack: en análisis incluimos ambos; en vs-bot solo el de jugador 0
+	// rack: always include both racks for sim mode visualization
 	if s.Analysis {
 		cur := s.Game.PlayerOnTurn()
 		if cur < 0 || cur > 1 {
@@ -393,7 +394,10 @@ func (m *MatchHandlers) serialize(s *match.Session) map[string]any {
 		out["rack_you"] = s.Game.RackFor(0).String()
 		out["rack_bot"] = s.Game.RackFor(1).String()
 	} else {
+		// vs-bot mode: include both racks so sim mode can show bot's rack
 		out["rack"] = s.Game.RackFor(0).String()
+		out["rack_you"] = s.Game.RackFor(0).String()
+		out["rack_bot"] = s.Game.RackFor(1).String()
 	}
 	return out
 }
@@ -434,10 +438,6 @@ func (m *MatchHandlers) SetRack(w http.ResponseWriter, r *http.Request) {
 			if strings.TrimSpace(tk) == "" {
 				continue
 			}
-			if isLowerToken(tk) {
-				b.WriteString("?")
-				continue
-			}
 			if strings.HasPrefix(tk, "[") && strings.HasSuffix(tk, "]") {
 				inner := strings.ToUpper(tk[1 : len(tk)-1])
 				switch inner {
@@ -453,46 +453,26 @@ func (m *MatchHandlers) SetRack(w http.ResponseWriter, r *http.Request) {
 		return b.String()
 	}
 	desired = normalizeRack(desired)
-	// Current and desired racks
-	cur := s.Game.RackFor(p).TilesOn()
 	desiredRack := tilemapping.RackFromString(desired, s.LD.TileMapping())
-	newTiles := desiredRack.TilesOn()
-	// Build multiset deltas
-	toMap := func(arr []tilemapping.MachineLetter) map[tilemapping.MachineLetter]int {
-		m := map[tilemapping.MachineLetter]int{}
-		for _, ml := range arr {
-			m[ml]++
-		}
-		return m
+
+	// Debug: log before SetRackFor
+	log.Printf("[SetRack] Player %d, desired rack: %s, current rack_0: %s, rack_1: %s, bag tiles: %d",
+		p, desired, s.Game.RackFor(0).String(), s.Game.RackFor(1).String(), s.Game.Bag().TilesRemaining())
+
+	// Use Macondo's SetRackFor which handles all the bag logic:
+	// - Throws both racks back into the bag
+	// - Removes the desired rack's tiles from the bag
+	// - Sets the rack for the specified player
+	// - Redraws a random rack for the opponent
+	if err := s.Game.SetRackFor(p, desiredRack); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tiles not available in bag", "detail": err.Error()})
+		return
 	}
-	oldMap := toMap(cur)
-	newMap := toMap(newTiles)
-	var retList []tilemapping.MachineLetter
-	for ml, ct := range oldMap {
-		if d := ct - newMap[ml]; d > 0 {
-			for i := 0; i < d; i++ {
-				retList = append(retList, ml)
-			}
-		}
-	}
-	var addList []tilemapping.MachineLetter
-	for ml, ct := range newMap {
-		if d := ct - oldMap[ml]; d > 0 {
-			for i := 0; i < d; i++ {
-				addList = append(addList, ml)
-			}
-		}
-	}
-	// Reconcile bag
-	bag := s.Game.Bag()
-	if len(retList) > 0 {
-		bag.PutBack(retList)
-	}
-	if len(addList) > 0 {
-		_ = bag.RemoveTiles(addList)
-	}
-	// Set final rack
-	s.Game.SetRackForOnly(p, desiredRack)
+
+	// Debug: log after SetRackFor
+	log.Printf("[SetRack] After SetRackFor - rack_0: %s, rack_1: %s, bag tiles: %d",
+		s.Game.RackFor(0).String(), s.Game.RackFor(1).String(), s.Game.Bag().TilesRemaining())
+
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
 
@@ -800,6 +780,31 @@ func (m *MatchHandlers) SetRackAnalysis(w http.ResponseWriter, r *http.Request) 
 		in.Player = 0
 	}
 	s.ManualRack[in.Player] = strings.TrimSpace(in.Rack)
+	writeJSON(w, http.StatusOK, m.serialize(s))
+}
+
+// TruncateAnalysis trims the match history to the provided turn, allowing
+// users to overwrite future moves while exploring alternate branches.
+func (m *MatchHandlers) TruncateAnalysis(w http.ResponseWriter, r *http.Request) {
+	id := m.pathID(r.URL.Path)
+	m.mu.RLock()
+	s := m.byID[id]
+	m.mu.RUnlock()
+	if s == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	var in struct {
+		Turn int `json:"turn"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
+		return
+	}
+	if err := s.TruncateToTurn(in.Turn); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
 
@@ -1553,26 +1558,45 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request) {
 	}
 	hist := s.Game.History()
 	rules := s.Game.Rules()
-	ng, err := game.NewFromHistory(hist, rules, 0)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
+
+	// For current turn, use live game state (which may have manually set racks)
+	// For historical turns, reconstruct from history
+	currentTurn := len(hist.Events)
+	useCurrentGameState := (turn >= currentTurn)
+
+	var ng *game.Game
+	var err error
+
+	if useCurrentGameState {
+		// Use current game state directly (preserves manually set racks)
+		ng = s.Game
+		log.Printf("[MovesAt] Using current game state for turn %d (current=%d)", turn, currentTurn)
+	} else {
+		// Reconstruct game from history for past turns
+		ng, err = game.NewFromHistory(hist, rules, 0)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if turn > len(hist.Events) {
+			turn = len(hist.Events)
+		}
+		if turn < 0 {
+			turn = 0
+		}
+		if err := ng.PlayToTurn(turn); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		log.Printf("[MovesAt] Reconstructed game from history for turn %d", turn)
 	}
-	if turn > len(hist.Events) {
-		turn = len(hist.Events)
-	}
-	if turn < 0 {
-		turn = 0
-	}
-	if err := ng.PlayToTurn(turn); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
+
 	// Prepare static equity calculator and generator
 	csc, _ := equity.NewCombinedStaticCalculator(s.Lexicon, s.CFG, equity.LeavesFilename, equity.PEGAdjustmentFilename)
 	sp, _ := aitp.NewAIStaticTurnPlayerFromGame(ng, s.CFG, []equity.EquityCalculator{csc})
 	mg := sp.MoveGenerator()
 	rack := ng.RackFor(ng.PlayerOnTurn())
+	log.Printf("[MovesAt] Generating moves for rack: %s (player %d on turn)", rack.String(), ng.PlayerOnTurn())
 	// Allow exchanges as long as there is at least 1 tile in the bag
 	exchAllowed := ng.Bag().TilesRemaining() >= 1
 	mg.GenAll(rack, exchAllowed)
@@ -1710,6 +1734,49 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request) {
 	}
 	// Ordenar por Equity desc para priorizar estático por equity (no score)
 	sort.SliceStable(res.All, func(i, j int) bool { return res.All[i].Equity > res.All[j].Equity })
+
+	// Ensure exchange and pass moves are prioritized in the response even if they have low equity
+	// This ensures they appear in the UI's top-N display
+	if len(res.All) > topk {
+		// Find best exchange
+		var bestExIdx int = -1
+		for i, mv := range res.All {
+			if mv.Type == "EXCH" {
+				bestExIdx = i
+				break
+			}
+		}
+		// Find pass move
+		var passIdx int = -1
+		for i, mv := range res.All {
+			if mv.Type == "PASS" {
+				passIdx = i
+				break
+			}
+		}
+		// If exchange or pass are beyond topk, move them to the end of top results
+		if bestExIdx >= topk {
+			exMove := res.All[bestExIdx]
+			res.All = append(res.All[:bestExIdx], res.All[bestExIdx+1:]...)
+			res.All = append(res.All[:topk], append([]Move{exMove}, res.All[topk:]...)...)
+		}
+		if passIdx >= topk {
+			// Re-find pass index in case exchange move affected it
+			passIdx = -1
+			for i, mv := range res.All {
+				if mv.Type == "PASS" {
+					passIdx = i
+					break
+				}
+			}
+			if passIdx >= topk {
+				passMove := res.All[passIdx]
+				res.All = append(res.All[:passIdx], res.All[passIdx+1:]...)
+				res.All = append(res.All[:topk], append([]Move{passMove}, res.All[topk:]...)...)
+			}
+		}
+	}
+
 	if len(res.All) > 0 {
 		res.Best = res.All[0]
 	}
