@@ -229,16 +229,23 @@ func (m *MatchHandlers) Play(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
 		return
 	}
+	origPlayer := int(s.Game.PlayerOnTurn())
+	var oldRack string
 	if in.FreeInput {
 		norm := normalizeWordToBrackets(in.Word)
 		mv := Move{Word: norm, Row: in.Row, Col: in.Col, Dir: strings.ToUpper(in.Dir)}
-		if err := m.prepareFreeInputRack(s, mv, in.Tokens); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		var errPrep error
+		oldRack, errPrep = m.prepareFreeInputRack(s, mv, in.Tokens)
+		if errPrep != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": errPrep.Error()})
 			return
 		}
 	}
 	_, err := s.PlayHuman(in.Word, matchCoords(in.Row, in.Col, in.Dir))
 	if err != nil {
+		if in.FreeInput {
+			revertFreeInput(s, origPlayer, oldRack)
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -276,9 +283,13 @@ func (m *MatchHandlers) AcceptLivePlay(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid direction"})
 		return
 	}
+	var oldRack string
+	origPlayer := int(s.Game.PlayerOnTurn())
 	if in.FreeInput {
-		if err := m.prepareFreeInputRack(s, mv, in.Tokens); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		var errPrep error
+		oldRack, errPrep = m.prepareFreeInputRack(s, mv, in.Tokens)
+		if errPrep != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": errPrep.Error()})
 			return
 		}
 	}
@@ -295,6 +306,9 @@ func (m *MatchHandlers) AcceptLivePlay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Game.PlayMove(play, true, 0); err != nil {
+		if in.FreeInput {
+			revertFreeInput(s, origPlayer, oldRack)
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -583,6 +597,19 @@ func (m *MatchHandlers) Unseen(w http.ResponseWriter, r *http.Request) {
 	}
 	// Analysis mode: if no historical turn requested, use analysis bag + opponent rack
 	if s.Analysis {
+		playerParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("player")))
+		useOnTurn := playerParam == "onturn"
+		viewIdx := 0
+		switch playerParam {
+		case "bot", "1":
+			viewIdx = 1
+		}
+		if useOnTurn {
+			viewIdx = int(s.Game.PlayerOnTurn())
+			if viewIdx < 0 || viewIdx > 1 {
+				viewIdx = 0
+			}
+		}
 		tparam := strings.TrimSpace(r.URL.Query().Get("turn"))
 		if tparam == "" {
 			// Use Game bag and opponent rack like vs-bot
@@ -594,9 +621,15 @@ func (m *MatchHandlers) Unseen(w http.ResponseWriter, r *http.Request) {
 					counts[alph.Letter(tilemapping.MachineLetter(i))] += int(ct)
 				}
 			}
-			on := s.Game.PlayerOnTurn()
-			opp := 1 - on
-			oppTiles := int(s.Game.RackFor(opp).NumTiles())
+			if viewIdx < 0 || viewIdx > 1 {
+				viewIdx = 0
+			}
+			oppIdx := 1 - viewIdx
+			oppRack := s.Game.RackFor(oppIdx)
+			for _, ml := range oppRack.TilesOn() {
+				counts[alph.Letter(ml)]++
+			}
+			oppTiles := int(oppRack.NumTiles())
 			tiles := make([][2]any, 0, len(counts))
 			bagRem := 0
 			for k, v := range counts {
@@ -625,6 +658,19 @@ func (m *MatchHandlers) Unseen(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
+			playerParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("player")))
+			useOnTurn := playerParam == "onturn"
+			viewIdx := 0
+			switch playerParam {
+			case "bot", "1":
+				viewIdx = 1
+			}
+			if useOnTurn {
+				viewIdx = int(ng.PlayerOnTurn())
+				if viewIdx < 0 || viewIdx > 1 {
+					viewIdx = 0
+				}
+			}
 			alph := ng.Alphabet()
 			bagMap := ng.Bag().PeekMap()
 			counts := map[string]int{}
@@ -639,7 +685,11 @@ func (m *MatchHandlers) Unseen(w http.ResponseWriter, r *http.Request) {
 				tiles = append(tiles, [2]any{k, v})
 				bagRem += v
 			}
-			oppTiles := int(ng.RackFor(1).NumTiles())
+			if viewIdx < 0 || viewIdx > 1 {
+				viewIdx = 0
+			}
+			oppIdx := 1 - viewIdx
+			oppTiles := int(ng.RackFor(oppIdx).NumTiles())
 			writeJSON(w, http.StatusOK, map[string]any{"id": s.ID, "bag_remaining": bagRem, "opp_rack": oppTiles, "total_unseen": bagRem + oppTiles, "tiles": tiles})
 			return
 		}
@@ -667,6 +717,19 @@ func (m *MatchHandlers) Unseen(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		playerParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("player")))
+		useOnTurn := playerParam == "onturn"
+		viewIdx := 0
+		switch playerParam {
+		case "bot", "1":
+			viewIdx = 1
+		}
+		if useOnTurn {
+			viewIdx = int(ng.PlayerOnTurn())
+			if viewIdx < 0 || viewIdx > 1 {
+				viewIdx = 0
+			}
+		}
 		alph := ng.Alphabet()
 		bagMap := ng.Bag().PeekMap()
 		counts := map[string]int{}
@@ -677,8 +740,12 @@ func (m *MatchHandlers) Unseen(w http.ResponseWriter, r *http.Request) {
 			letter := alph.Letter(tilemapping.MachineLetter(i))
 			counts[letter] += int(ct)
 		}
-		opp := ng.RackFor(1)
-		for _, ml := range opp.TilesOn() {
+		if viewIdx < 0 || viewIdx > 1 {
+			viewIdx = 0
+		}
+		oppIdx := 1 - viewIdx
+		oppRack := ng.RackFor(oppIdx)
+		for _, ml := range oppRack.TilesOn() {
 			letter := alph.Letter(ml)
 			counts[letter] += 1
 		}
@@ -687,7 +754,7 @@ func (m *MatchHandlers) Unseen(w http.ResponseWriter, r *http.Request) {
 			tiles = append(tiles, [2]any{k, v})
 		}
 		bagRem := ng.Bag().TilesRemaining()
-		oppTiles := int(opp.NumTiles())
+		oppTiles := int(oppRack.NumTiles())
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":            s.ID,
 			"bag_remaining": bagRem,
@@ -699,6 +766,19 @@ func (m *MatchHandlers) Unseen(w http.ResponseWriter, r *http.Request) {
 	}
 	// Live unseen (current state)
 	{
+		playerParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("player")))
+		useOnTurn := playerParam == "onturn"
+		viewIdx := 0
+		switch playerParam {
+		case "bot", "1":
+			viewIdx = 1
+		}
+		if useOnTurn {
+			viewIdx = int(s.Game.PlayerOnTurn())
+			if viewIdx < 0 || viewIdx > 1 {
+				viewIdx = 0
+			}
+		}
 		alph := s.Game.Alphabet()
 		bagMap := s.Game.Bag().PeekMap()
 		counts := map[string]int{}
@@ -709,8 +789,12 @@ func (m *MatchHandlers) Unseen(w http.ResponseWriter, r *http.Request) {
 			letter := alph.Letter(tilemapping.MachineLetter(i))
 			counts[letter] += int(ct)
 		}
-		opp := s.Game.RackFor(1)
-		for _, ml := range opp.TilesOn() {
+		if viewIdx < 0 || viewIdx > 1 {
+			viewIdx = 0
+		}
+		oppIdx := 1 - viewIdx
+		oppRack := s.Game.RackFor(oppIdx)
+		for _, ml := range oppRack.TilesOn() {
 			letter := alph.Letter(ml)
 			counts[letter] += 1
 		}
@@ -719,7 +803,7 @@ func (m *MatchHandlers) Unseen(w http.ResponseWriter, r *http.Request) {
 			tiles = append(tiles, [2]any{k, v})
 		}
 		bagRem := s.Game.Bag().TilesRemaining()
-		oppTiles := int(opp.NumTiles())
+		oppTiles := int(oppRack.NumTiles())
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":            s.ID,
 			"bag_remaining": bagRem,
@@ -875,11 +959,13 @@ func (m *MatchHandlers) TruncateAnalysis(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
 
-func (m *MatchHandlers) prepareFreeInputRack(s *match.Session, mv Move, tokens []string) error {
+func (m *MatchHandlers) prepareFreeInputRack(s *match.Session, mv Move, tokens []string) (string, error) {
 	g := s.Game
 	if len(tokens) == 0 {
 		tokens = tokenizeRow(mv.Word)
 	}
+	on := int(g.PlayerOnTurn())
+	oldRack := g.RackFor(on).String()
 	var sb strings.Builder
 	for _, tk := range tokens {
 		tk = strings.TrimSpace(tk)
@@ -903,18 +989,18 @@ func (m *MatchHandlers) prepareFreeInputRack(s *match.Session, mv Move, tokens [
 	}
 	rackStr := strings.TrimSpace(sb.String())
 	if rackStr == "" {
-		return errors.New("no tiles placed for free input")
+		return "", errors.New("no tiles placed for free input")
 	}
 	rack := tilemapping.RackFromString(rackStr, s.LD.TileMapping())
 	if rack == nil {
-		return fmt.Errorf("invalid tiles for free input: %s", rackStr)
+		return "", fmt.Errorf("invalid tiles for free input: %s", rackStr)
 	}
-	on := int(g.PlayerOnTurn())
 	g.ThrowRacksInFor(on)
 	if err := g.SetRackForOnly(on, rack); err != nil {
-		return err
+		restoreRackFromString(s, on, oldRack)
+		return "", err
 	}
-	return nil
+	return oldRack, nil
 }
 
 func buildTilesForMove(s *match.Session, mv Move, tokens []string) (string, error) {
@@ -971,6 +1057,67 @@ func normalizePlacementToken(token string) string {
 		return strings.ToLower(t)
 	}
 	return strings.ToUpper(t)
+}
+
+func normalizeRackInput(rack string) string {
+	if strings.TrimSpace(rack) == "" {
+		return ""
+	}
+	toks := tokenizeRow(normalizeWordToBrackets(rack))
+	var b strings.Builder
+	for _, tk := range toks {
+		if strings.TrimSpace(tk) == "" {
+			continue
+		}
+		if strings.HasPrefix(tk, "[") && strings.HasSuffix(tk, "]") {
+			innerRaw := tk[1 : len(tk)-1]
+			if innerRaw == strings.ToLower(innerRaw) {
+				b.WriteString("?")
+				continue
+			}
+			inner := strings.ToUpper(innerRaw)
+			switch inner {
+			case "CH", "LL", "RR":
+				b.WriteString("[" + inner + "]")
+			default:
+				b.WriteString(inner)
+			}
+			continue
+		}
+		if tk == "?" {
+			b.WriteString("?")
+			continue
+		}
+		if tk == strings.ToLower(tk) && strings.ToUpper(tk) != tk {
+			// lowercase letters represent blanks
+			b.WriteString("?")
+			continue
+		}
+		b.WriteString(strings.ToUpper(tk))
+	}
+	return b.String()
+}
+
+func restoreRackFromString(s *match.Session, player int, rackStr string) {
+	if strings.TrimSpace(rackStr) == "" {
+		return
+	}
+	norm := normalizeRackInput(rackStr)
+	if norm == "" {
+		return
+	}
+	rack := tilemapping.RackFromString(norm, s.LD.TileMapping())
+	if rack == nil {
+		return
+	}
+	if err := s.Game.SetRackForOnly(player, rack); err != nil {
+		log.Printf("restore rack failed: %v", err)
+	}
+}
+
+func revertFreeInput(s *match.Session, player int, oldRack string) {
+	s.Game.ThrowRacksInFor(player)
+	restoreRackFromString(s, player, oldRack)
 }
 
 func isBlankToken(tk string) bool {

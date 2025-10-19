@@ -776,10 +776,19 @@
           root.appendChild(row);
         }
       }
+      function currentUnseenPerspective(){
+        const showBotRackToggle = document.getElementById('showBotRack')?.checked || false;
+        if (!isAnalysis && matchMode === 'sim' && showBotRackToggle){
+          return 'onturn';
+        }
+        return 'you';
+      }
       async function refreshUnseen(){
         if (!matchId) return;
         try {
-          const r = await fetch(`/matches/${matchId}/unseen`);
+          const perspective = currentUnseenPerspective();
+          const url = perspective ? `/matches/${matchId}/unseen?player=${perspective}` : `/matches/${matchId}/unseen`;
+          const r = await fetch(url);
           const j = await r.json();
           if (j && !j.error){
             // Update counts
@@ -1821,7 +1830,10 @@
             const mu = document.getElementById('matchUnseen'); if (mu) mu.textContent = String(cached.total_unseen||0);
             return;
           }
-          const r = await fetch(`/matches/${matchId}/unseen?turn=${n}`);
+          const params = new URLSearchParams({turn: String(n)});
+          const perspective = currentUnseenPerspective();
+          if (perspective) params.set('player', perspective);
+          const r = await fetch(`/matches/${matchId}/unseen?${params.toString()}`);
           const j = await r.json();
           if (j && j.error) return;
           // Normalize tiles into a map (key -> count)
