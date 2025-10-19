@@ -2267,6 +2267,31 @@
           }
         };
       }
+      function looksLikeInvalidWord(errMsg){
+        if (!errMsg) return false;
+        const msg = String(errMsg||'').toLowerCase();
+        return msg.includes('invalid words') || msg.includes('word not valid') || msg.includes('word is invalid') || msg.includes('move not valid') || msg.includes('illegal move') || msg.includes('no está en el diccionario');
+      }
+      async function forcePhonyPlay(payload, errMsg){
+        if (!payload || !looksLikeInvalidWord(errMsg)) return false;
+        const confirmMsg = errMsg ? `La jugada fue rechazada (${errMsg}). ¿Forzarla igualmente?` : 'La jugada fue rechazada. ¿Forzarla igualmente?';
+        if (!window.confirm(confirmMsg)) return false;
+        try{
+          const res = await fetch(`/matches/${matchId}/accept`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+          const j = await res.json();
+          if (!res.ok || (j && j.error)){
+            alert((j && j.error) || 'No se pudo forzar la jugada.');
+            return false;
+          }
+          await refreshMatch(); await refreshHistory();
+          if (document.getElementById('matchAutoAI')?.checked){ await doAIMove(); }
+          return true;
+        }catch(err){
+          console.error('force play error', err);
+          alert('No se pudo forzar la jugada.');
+          return false;
+        }
+      }
       async function submitPlay(){ if(!matchId) return; // indicator is for typing only; infer direction from placements
         // ensure any buffered key is flushed before submit
         flushPendingKey();
@@ -2312,14 +2337,28 @@
           } else {
             if (!(await ensureOverwriteAllowed())) { return; }
             let ok = false, lastErr = '';
+            let fallbackPayload = null;
             for (const p of payloads){
-              if (freeFlag) { p.free_input = true; }
-              const res = await fetch(`/matches/${matchId}/play`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(p)});
+              const body = {...p};
+              if (freeFlag) { body.free_input = true; }
+              const res = await fetch(`/matches/${matchId}/play`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
               const j = await res.json();
-              if (!j || j.error){ lastErr = (j && j.error) || 'error'; continue; }
+              if (!j || j.error){
+                lastErr = (j && j.error) || 'error';
+                if (!fallbackPayload && looksLikeInvalidWord(lastErr)) {
+                  fallbackPayload = body;
+                }
+                continue;
+              }
               ok = true; break;
             }
-            if (!ok){ alert(lastErr || 'Jugada ilegal'); return; }
+            if (!ok){
+              const forced = await forcePhonyPlay(fallbackPayload, lastErr);
+              if (!forced){
+                alert(lastErr || 'Jugada ilegal'); return;
+              }
+              return;
+            }
           }
           await refreshMatch(); await refreshHistory();
           // Auto AI move if enabled

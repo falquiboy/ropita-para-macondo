@@ -245,6 +245,62 @@ func (m *MatchHandlers) Play(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
 
+// AcceptLivePlay force-applies a move even if it wasn't recognized by PlayHuman (e.g., phonies).
+func (m *MatchHandlers) AcceptLivePlay(w http.ResponseWriter, r *http.Request) {
+	id := m.pathID(r.URL.Path)
+	m.mu.RLock()
+	s := m.byID[id]
+	m.mu.RUnlock()
+	if s == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	if s.Analysis {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "use analysis apply endpoint"})
+		return
+	}
+	var in struct {
+		Word      string   `json:"word"`
+		Row       int      `json:"row"`
+		Col       int      `json:"col"`
+		Dir       string   `json:"dir"`
+		Tokens    []string `json:"tokens"`
+		FreeInput bool     `json:"free_input"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
+		return
+	}
+	mv := Move{Word: normalizeWordToBrackets(in.Word), Row: in.Row, Col: in.Col, Dir: strings.ToUpper(in.Dir)}
+	if mv.Dir != "H" && mv.Dir != "V" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid direction"})
+		return
+	}
+	if in.FreeInput {
+		if err := m.prepareFreeInputRack(s, mv, in.Tokens); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	tiles, err := buildTilesForMove(s, mv, in.Tokens)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	coords := move.ToBoardGameCoords(mv.Row, mv.Col, mv.Dir == "V")
+	rack := s.Game.RackFor(s.Game.PlayerOnTurn()).String()
+	play, err := s.Game.CreateAndScorePlacementMove(coords, tiles, rack, false)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := s.Game.PlayMove(play, true, 0); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, m.serialize(s))
+}
+
 func (m *MatchHandlers) Exchange(w http.ResponseWriter, r *http.Request) {
 	id := m.pathID(r.URL.Path)
 	m.mu.RLock()
@@ -859,6 +915,62 @@ func (m *MatchHandlers) prepareFreeInputRack(s *match.Session, mv Move, tokens [
 		return err
 	}
 	return nil
+}
+
+func buildTilesForMove(s *match.Session, mv Move, tokens []string) (string, error) {
+	g := s.Game
+	board := g.Board()
+	alph := g.Alphabet()
+	row, col := mv.Row, mv.Col
+	dr, dc := 0, 1
+	if strings.ToUpper(mv.Dir) == "V" {
+		dr, dc = 1, 0
+	}
+	ti := 0
+	var sb strings.Builder
+	for row >= 0 && row < 15 && col >= 0 && col < 15 {
+		ml := board.GetLetter(row, col)
+		if ml != 0 {
+			sb.WriteString(alph.Letter(ml))
+		} else {
+			if ti >= len(tokens) {
+				break
+			}
+			tile := normalizePlacementToken(tokens[ti])
+			if tile == "" {
+				return "", fmt.Errorf("invalid token at index %d", ti)
+			}
+			sb.WriteString(tile)
+			ti++
+		}
+		row += dr
+		col += dc
+		if ml == 0 && ti >= len(tokens) {
+			break
+		}
+	}
+	if ti != len(tokens) {
+		return "", fmt.Errorf("unplaced tokens: expected %d, placed %d", len(tokens), ti)
+	}
+	return sb.String(), nil
+}
+
+func normalizePlacementToken(token string) string {
+	t := strings.TrimSpace(token)
+	if t == "" {
+		return ""
+	}
+	if strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]") {
+		inner := t[1 : len(t)-1]
+		if inner == strings.ToLower(inner) {
+			return strings.ToLower(inner)
+		}
+		return strings.ToUpper(inner)
+	}
+	if len(t) == 1 && strings.ToLower(t) == t && strings.ToUpper(t) != t {
+		return strings.ToLower(t)
+	}
+	return strings.ToUpper(t)
 }
 
 func isBlankToken(tk string) bool {
