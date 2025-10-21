@@ -1,7 +1,0 @@
-# Dockerfile for Kurnia files (KWG, KLV)
-# See github.com/andy-k/wolges
-FROM rust:1.75.0
-ADD . /workdir
-WORKDIR /workdir
-RUN ["cargo", "build", "--release", "--bin", "buildlex"]
-ENTRYPOINT ["cargo", "run", "--release", "--bin", "buildlex"]

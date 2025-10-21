@@ -118,6 +118,7 @@ func (m *MatchHandlers) Abort(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
+
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "POST only"})
 		return
@@ -466,20 +467,14 @@ func (m *MatchHandlers) serialize(s *match.Session) map[string]any {
 	out["board_rows"] = rows
 	out["bonus_rows"] = bonus
 	// rack: always include both racks for sim mode visualization
-	if s.Analysis {
-		cur := s.Game.PlayerOnTurn()
-		if cur < 0 || cur > 1 {
-			cur = 0
-		}
-		out["rack"] = s.Game.RackFor(cur).String()
-		out["rack_you"] = s.Game.RackFor(0).String()
-		out["rack_bot"] = s.Game.RackFor(1).String()
-	} else {
-		// vs-bot mode: include both racks so sim mode can show bot's rack
-		out["rack"] = s.Game.RackFor(0).String()
-		out["rack_you"] = s.Game.RackFor(0).String()
-		out["rack_bot"] = s.Game.RackFor(1).String()
+	// rack = current player on turn, rack_you = player 0, rack_bot = player 1
+	cur := s.Game.PlayerOnTurn()
+	if cur < 0 || cur > 1 {
+		cur = 0
 	}
+	out["rack"] = s.Game.RackFor(cur).String()
+	out["rack_you"] = s.Game.RackFor(0).String()
+	out["rack_bot"] = s.Game.RackFor(1).String()
 	return out
 }
 
@@ -536,22 +531,41 @@ func (m *MatchHandlers) SetRack(w http.ResponseWriter, r *http.Request) {
 	desired = normalizeRack(desired)
 	desiredRack := tilemapping.RackFromString(desired, s.LD.TileMapping())
 
-	// Debug: log before SetRackFor
+	// Debug: log before setting rack
 	log.Printf("[SetRack] Player %d, desired rack: %s, current rack_0: %s, rack_1: %s, bag tiles: %d",
 		p, desired, s.Game.RackFor(0).String(), s.Game.RackFor(1).String(), s.Game.Bag().TilesRemaining())
 
-	// Use Macondo's SetRackFor which handles all the bag logic:
-	// - Throws both racks back into the bag
-	// - Removes the desired rack's tiles from the bag
-	// - Sets the rack for the specified player
-	// - Redraws a random rack for the opponent
-	if err := s.Game.SetRackFor(p, desiredRack); err != nil {
+	// Strategy: To allow free rack definition (especially in analysis mode), we need to:
+	// 1. Return BOTH racks to the bag (to make all tiles available)
+	// 2. Set the desired rack for player p
+	// 3. Restore the opponent's rack from what it was before
+
+	// Save opponent's rack before modifications
+	oppIdx := 1 - p
+	oppRackStr := s.Game.RackFor(oppIdx).String()
+
+	// Return both racks to the bag to make all tiles available
+	s.Game.ThrowRacksIn()
+
+	// Set the desired rack for player p
+	if err := s.Game.SetRackForOnly(p, desiredRack); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "tiles not available in bag", "detail": err.Error()})
 		return
 	}
 
-	// Debug: log after SetRackFor
-	log.Printf("[SetRack] After SetRackFor - rack_0: %s, rack_1: %s, bag tiles: %d",
+	// Restore opponent's rack (if it's valid and tiles are available)
+	if strings.TrimSpace(oppRackStr) != "" {
+		oppRack := tilemapping.RackFromString(oppRackStr, s.LD.TileMapping())
+		if oppRack != nil {
+			if err := s.Game.SetRackForOnly(oppIdx, oppRack); err != nil {
+				// If opponent's rack can't be restored (tiles not available), log but continue
+				log.Printf("[SetRack] Warning: could not restore opponent rack %s: %v", oppRackStr, err)
+			}
+		}
+	}
+
+	// Debug: log after setting rack
+	log.Printf("[SetRack] After setting racks - rack_0: %s, rack_1: %s, bag tiles: %d",
 		s.Game.RackFor(0).String(), s.Game.RackFor(1).String(), s.Game.Bag().TilesRemaining())
 
 	writeJSON(w, http.StatusOK, m.serialize(s))
@@ -1881,46 +1895,67 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request) {
 	}
 	hist := s.Game.History()
 	rules := s.Game.Rules()
-
-	// For current turn, use live game state (which may have manually set racks)
-	// For historical turns, reconstruct from history
-	currentTurn := len(hist.Events)
-	useCurrentGameState := (turn >= currentTurn)
-
-	var ng *game.Game
-	var err error
-
-	if useCurrentGameState {
-		// Use current game state directly (preserves manually set racks)
-		ng = s.Game
-		log.Printf("[MovesAt] Using current game state for turn %d (current=%d)", turn, currentTurn)
-	} else {
-		// Reconstruct game from history for past turns
-		ng, err = game.NewFromHistory(hist, rules, 0)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		if turn > len(hist.Events) {
-			turn = len(hist.Events)
-		}
-		if turn < 0 {
-			turn = 0
-		}
-		if err := ng.PlayToTurn(turn); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		log.Printf("[MovesAt] Reconstructed game from history for turn %d", turn)
+	maxTurn := len(hist.Events)
+	if turn > maxTurn {
+		turn = maxTurn
+	}
+	if turn < 0 {
+		turn = 0
 	}
 
-	// Prepare static equity calculator and generator
+	ng, err := game.NewFromHistory(hist, rules, 0)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := ng.PlayToTurn(turn); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if turn == maxTurn {
+		// When we're at the current/latest turn, copy the current racks from s.Game
+		// This ensures manually-set racks are preserved for analysis/simulation
+		log.Printf("[MovesAt] At current turn %d, copying racks from s.Game - rack_0: %s, rack_1: %s",
+			turn, s.Game.RackFor(0).String(), s.Game.RackFor(1).String())
+
+		ng.ThrowRacksIn()
+		for player := 0; player < 2; player++ {
+			rackStr := s.Game.RackFor(player).String()
+			rack := tilemapping.RackFromString(rackStr, s.LD.TileMapping())
+			if rack != nil {
+				if err := ng.SetRackForOnly(player, rack); err != nil {
+					log.Printf("[MovesAt] Unable to set rack for player %d: %v", player, err)
+				} else {
+					log.Printf("[MovesAt] Successfully set rack for player %d: %s", player, ng.RackFor(player).String())
+				}
+			}
+		}
+	}
+
+	rawPlayer := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("player")))
+	playerIdx := 0
+	switch rawPlayer {
+	case "1", "bot":
+		playerIdx = 1
+	case "onturn":
+		playerIdx = int(ng.PlayerOnTurn())
+		if playerIdx < 0 || playerIdx > 1 {
+			playerIdx = 0
+		}
+	}
+
+	if playerIdx != int(ng.PlayerOnTurn()) {
+		ng.SetPlayerOnTurn(playerIdx)
+	}
+
 	csc, _ := equity.NewCombinedStaticCalculator(s.Lexicon, s.CFG, equity.LeavesFilename, equity.PEGAdjustmentFilename)
 	sp, _ := aitp.NewAIStaticTurnPlayerFromGame(ng, s.CFG, []equity.EquityCalculator{csc})
 	mg := sp.MoveGenerator()
-	rack := ng.RackFor(ng.PlayerOnTurn())
-	log.Printf("[MovesAt] Generating moves for rack: %s (player %d on turn)", rack.String(), ng.PlayerOnTurn())
-	// Allow exchanges as long as there is at least 1 tile in the bag
+	rack := ng.RackFor(playerIdx)
+	log.Printf("[MovesAt] Generating moves for rack: %s (player %d on turn %d, bag: %d tiles)",
+		rack.String(), playerIdx, turn, ng.Bag().TilesRemaining())
+	log.Printf("[MovesAt] Current game state - rack_0: %s, rack_1: %s",
+		ng.RackFor(0).String(), ng.RackFor(1).String())
 	exchAllowed := ng.Bag().TilesRemaining() >= 1
 	mg.GenAll(rack, exchAllowed)
 	// Collect plays
@@ -2012,6 +2047,9 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request) {
 		if csc == nil {
 			csc, _ = equity.NewCombinedStaticCalculator(s.Lexicon, s.CFG, "", equity.PEGAdjustmentFilename)
 		}
+		log.Printf("[MovesAt] Starting simulation with %d candidates for player %d", len(cand), playerIdx)
+		log.Printf("[MovesAt] Simulation racks - rack_0: %s, rack_1: %s (player on turn: %d)",
+			ng.RackFor(0).String(), ng.RackFor(1).String(), ng.PlayerOnTurn())
 		simmer := &montecarlo.Simmer{}
 		simmer.Init(ng, []equity.EquityCalculator{csc}, csc, s.CFG)
 		if threads <= 0 {

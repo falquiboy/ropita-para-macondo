@@ -141,7 +141,6 @@
           <option value="FILE2017.kwg">FILE2017.kwg (repo root)</option>
           <option value="lexica/FILE2017.kwg">FILE2017.kwg (DUPMAN/lexica)</option>
           <option value="FISE2016_converted.kwg">FISE2016_converted.kwg (repo root)</option>
-          <option value="/Users/isaacfalconer/DB_sources/gaddag/FISE2016_converted.kwg">FISE2016_converted.kwg (DB_sources)</option>
         </select>
       </label>
       <label style="margin-left:8px">Desafío
@@ -273,7 +272,6 @@
       <label>KWG Preset
         <select id="kwgPreset">
           <option value="">— Select —</option>
-          <option value="/Users/isaacfalconer/DB_sources/gaddag/FISE2016_converted.kwg">FISE2016_converted.kwg (DB_sources)</option>
           <option value="FISE2016_converted.kwg">FISE2016_converted.kwg (repo root)</option>
           <option value="lexica/FILE2017.kwg">FILE2017.kwg (DUPMAN/lexica)</option>
           <option value="FILE2017.kwg">FILE2017.kwg (repo root)</option>
@@ -778,12 +776,36 @@
       }
       function currentUnseenPerspective(){
         const showBotRackToggle = document.getElementById('showBotRack')?.checked || false;
+        // In analysis mode, always use 'onturn' perspective to match the manually-set rack
+        if (isAnalysis){
+          return 'onturn';
+        }
+        // In vs-bot sim mode with "Ver atril Bot" enabled, use 'onturn' perspective
         if (!isAnalysis && matchMode === 'sim' && showBotRackToggle){
           return 'onturn';
         }
         return 'you';
       }
-      async function refreshUnseen(){
+      async function ensureLiveTurnState(){
+        if (!matchId) return false;
+        try {
+          const evRes = await fetch(`/matches/${matchId}/events`);
+          const ev = await evRes.json();
+          tnEvents = Number(ev.count||0);
+          const perspective = currentUnseenPerspective();
+          const playerQuery = perspective === 'onturn' ? 'onturn' : 'you';
+          const posRes = await fetch(`/matches/${matchId}/position?turn=0&player=${playerQuery}`);
+          const pos = await posRes.json();
+          if (!pos || pos.error) return false;
+          tnTurn = Number(pos.turn||0)|0;
+          tnPos = pos;
+          return true;
+        } catch (err) {
+          console.warn('ensureLiveTurnState failed', err);
+          return false;
+        }
+      }
+async function refreshUnseen(){
         if (!matchId) return;
         try {
           const perspective = currentUnseenPerspective();
@@ -1661,7 +1683,7 @@
         div.innerHTML = html;
       }
       // ==== Turn navigation (post-game) ====
-      let tnTurn = 0, tnEvents = 0, tnPos = null; let tnMoves = []; let tnMoveIdx = -1; let tnStaticRank = new Map();
+      let tnTurn = 0, tnEvents = 0, tnPos = null; let tnMoves = []; let tnMoveIdx = -1; let tnSelPos = -1; let tnStaticRank = new Map();
       let tnEventList = []; // cached events for the match (for highlighting the played move)
       // Caches for analysis view: per-turn score and unseen map
       const tnScoreCache = new Map(); // turn -> [a,b]
@@ -1733,94 +1755,46 @@
           tnSelPos = -1;
           previewPlacements = {};
           lastHighlight = null;
-          renderMatchBoard();
-          let j = null;
-          if (isAnalysis){
-            // Build board rows from current state and choose rack according to onturn
-            const rows = [];
-            for (let r=0;r<15;r++){ let s=''; for(let c=0;c<15;c++){ const tk = matchBoardState[r*15+c]||' '; s += (tk||' '); } rows.push(s); }
-            // Prefer the rack enviado por el servidor (debajo del tablero) sobre inputs del sidebar
-            const serverRack = (window._currentRack||'').trim();
-            let rack;
-            if (serverRack){
-              rack = serverRack;
-            } else {
-              const ry = (document.getElementById('anRackYou')?.value||'').trim();
-              const rb = (document.getElementById('anRackBot')?.value||'').trim();
-              rack = (matchOnTurn===0 ? (ry || (window._anRacks?.you||'')) : (rb || (window._anRacks?.bot||'')));
-            }
-          const rs = (window._ruleset||'OSPS49');
-          const body = { board:{ rows }, rack, kwg: '', ruleset: rs };
-          const resp = await fetch('/moves', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-          j = await resp.json();
-          } else {
-            const r = await fetch(`/matches/${matchId}/moves?turn=${tnTurn}`);
-            j = await r.json();
+          if (!tnPos) {
+            const ready = await ensureLiveTurnState();
+            if (!ready || !tnPos) { root.innerHTML = '<em>Sin posición disponible</em>'; return; }
           }
+          const headers = { 'Content-Type': 'application/json' };
+          const perspective = currentUnseenPerspective();
+          const qs = new URLSearchParams({mode: 'static'});
+          if (perspective) qs.set('player', perspective === 'onturn' ? 'onturn' : 'you');
+          const url = `/matches/${matchId}/moves?${qs.toString()}&turn=${tnTurn}`;
+          const r = await fetch(url, { headers });
+          const j = await r.json();
           if (j && j.error){ root.innerHTML = `<span style="color:#b91c1c">${j.error}</span>`; return; }
-          // Render compact table for analysis (Score, Equity, Coord ES, Word, Leave) sorted by Equity desc
-          const all = Array.isArray(j.all)? j.all : [];
-          tnMoves = all; tnMoveIdx = -1;
-          // Helper to build word with anchor tokens using current board state
-          // mv: {row,col,dir,word}
-          // Returns placedWord + (anchor) when anchor exists, else just placedWord
-          // wordWithAnchor is defined globally; reuse here
-          // Helper: render exchange/pass in word field
+          tnMoves = Array.isArray(j.all) ? j.all : []; tnMoveIdx = -1;
           const tokensToPlain = (s)=>{ const t=tokensFromBracketStr(String(s||'')); return t.map(x=> (x.startsWith('[')&&x.endsWith(']'))? x.slice(1,-1) : x).join(''); };
-          const arr = all.map((m,i)=>{
-            const eqNum = (typeof m.equity==='number') ? m.equity : Number(m.equity||0);
+          const arr = tnMoves.map((m,i)=>{
             const coordES = coordsStr(m.row|0, m.col|0, m.dir||'H');
             const arrow = (String(m.dir||'H').toUpperCase()==='V') ? '(↓)' : '(→)';
+            const key = `${coordES} ${arrow}|${String(m.word||'')}`;
+            const statRank = tnStaticRank.get(key) || '';
+            const eq = (typeof m.equity==='number'? m.equity : Number(m.equity||0)).toFixed(2);
+            const sc = (typeof m.score==='number'? m.score : Number(m.score||0));
             let dispWord = '';
-            const typ = String(m.type||'');
+            const typ = String(m.type||'').toUpperCase();
             if (typ === 'EXCH') dispWord = `exch ${tokensToPlain(m.word)}`;
             else if (typ === 'PASS') dispWord = 'pass';
             else dispWord = wordWithAnchor(m);
-            return { idx:i, score: Number(m.score||0), eq: eqNum, coord: `${coordES} ${arrow}`, word: dispWord, leave: String(m.leave||''), lv: (typeof m.leaveVal==='number'? m.leaveVal : Number(m.leaveVal||0)) };
-          });
-          arr.sort((a,b)=> (b.eq - a.eq));
-          tnStaticRank.clear();
-          arr.forEach((r,rank)=>{ const key = `${r.coord}|${r.word}`; tnStaticRank.set(key, rank+1); });
-          // Determine the actually played move at this turn (next event, if any)
-          let playedKey = null;
-          try {
-            const ev = (Array.isArray(tnEventList) && tnTurn < tnEventList.length) ? tnEventList[tnTurn] : null;
-            if (ev && String(ev.type||'').toUpperCase()==='TILE_PLACEMENT_MOVE'){
-              const coordES = coordsStr(ev.row|0, ev.col|0, ev.dir||'H');
-              const arrow = (String(ev.dir||'H').toUpperCase()==='V') ? '(↓)' : '(→)';
-              // Use 'played' field if available (from post-mortem), otherwise use wordWithAnchor
-              const displayWord = ev.played ? ev.played.replace(/\./g, '') : wordWithAnchor(ev);
-              playedKey = `${coordES} ${arrow}|${displayWord}`;
-              // Debug logging
-              console.log('Static Analysis - Played move key:', playedKey);
-              console.log('Event word:', ev.word, 'Event played:', ev.played, 'Display word:', displayWord);
-            }
-          }catch(_){ playedKey = null; }
+            return { idx:i, coord:`${coordES} ${arrow}`, word:dispWord, leave:String(m.leave||''), eq, score: sc, statRank };
+          }).sort((a,b)=> Number(b.eq) - Number(a.eq));
           const rows = arr.slice(0, 50).map((r,i)=>{
-            const lv = Number.isFinite(r.lv) ? r.lv.toFixed(2) : '';
-            const eq = Number.isFinite(r.eq) ? r.eq.toFixed(2) : '';
-            const leave = r.leave || '—';
-            // Create unique key including both coord and word
             const moveKey = `${r.coord}|${r.word}`;
-            const playedCls = (playedKey && moveKey===playedKey) ? ' class="played"' : '';
-            // Debug logging for first few moves
-            if (i < 3) console.log(`Candidate ${i+1}: key="${moveKey}", matches played? ${moveKey===playedKey}`);
-            return `<tr data-idx="${r.idx}"${playedCls}><td>${i+1}</td><td>${r.score|0}</td><td>${eq}</td><td>${r.coord}</td><td>${r.word}</td><td>${leave}</td><td>${lv}</td></tr>`;
+            const stat = r.statRank || '';
+            return `<tr data-idx="${r.idx}"><td>${i+1}</td><td>${r.score|0}</td><td>${r.eq}</td><td>${stat}</td><td>${r.coord}</td><td>${r.word}</td><td>${r.leave}</td></tr>`;
           }).join('');
-          const warn = (!all.length ? `<div style="margin-top:4px;color:#b91c1c">Sin jugadas. Si VALIDATE_SPAN está activo, puede filtrar todo en posiciones con palabras no españolas en el tablero.</div>` : '');
-          root.innerHTML = `<div style=\"margin-bottom:4px;color:#374151;font-size:12px\">Jugadas: ${all.length}</div>`+
-            `<table id=\"tnTable\" style=\"border-collapse:collapse;width:100%;font-size:12px\"><thead><tr style=\"background:#f8fafc\"><th>#</th><th>Score</th><th>Equity</th><th>Coord</th><th>Palabra</th><th>Leave</th><th>Leave Val</th></tr></thead><tbody>${rows||''}</tbody></table>` + warn;
-          // Click to preview selection (position-based within sorted list); do not auto-preview
-          try {
-            const tb = document.getElementById('tnTable');
-            if (tb){ tb.querySelectorAll('tbody tr').forEach((tr,pos)=>{ tr.onclick=()=>{ tnSelPos = pos; previewSelectedMove(); highlightSelectedRow(); }; }); }
-          } catch(_) { }
+          root.innerHTML = `<div style="margin-bottom:4px;color:#374151;font-size:12px">Jugadas (Static): ${tnMoves.length}</div>`+
+            `<table id="tnTable" style="border-collapse:collapse;width:100%;font-size:12px"><thead><tr style="background:#f8fafc"><th>#</th><th>Score</th><th>Equity</th><th>Rk(Eq)</th><th>Coord</th><th>Palabra</th><th>Leave</th></tr></thead><tbody>${rows||''}</tbody></table>`;
           focusTurnMovesPanel();
-          // No auto-select: keep board as initial state until user presses ArrowDown
         }catch(e){ console.error('genTurnMoves failed', e); }
       }
 
-      async function refreshUnseenAtTurn(n){
+async function refreshUnseenAtTurn(n){
         try {
           // Use cache if available
           if (tnUnseenCache.has(n)){
@@ -1861,7 +1835,9 @@
           renderMatchBoard();
           if (!tnPos) { root.innerHTML = '<em>Sin posición</em>'; return; }
           const threads = Math.max(1, parseInt(document.getElementById('matchSimThreads')?.value||'1',10)||1);
+          const perspective = currentUnseenPerspective();
           const qs = new URLSearchParams({ mode:'sim', iters:'2000', plies:'5', topK:'75', threads:String(threads) });
+          if (perspective) qs.set('player', perspective === 'onturn' ? 'onturn' : 'you');
           const r = await fetch(`/matches/${matchId}/moves?turn=${tnTurn}&${qs.toString()}`);
           const j = await r.json(); if (j && j.error){ root.innerHTML = `<span style=\"color:#b91c1c\">${j.error}</span>`; return; }
           const all = Array.isArray(j.all)? j.all : [];

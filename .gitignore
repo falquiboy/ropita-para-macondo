@@ -2,26 +2,52 @@
 .DS_Store
 *.swp
 *.swo
+*~
+.vscode/
+.idea/
 
-# Go caches
+# Go caches and build
 .gocache/
 .gomodcache/
+*.test
+*.out
+go.work
 
-# Node / frontend (por si aplica)
+# Node / frontend
 node_modules/
 dist/
 build/
+package-lock.json
 
 # Binarios y artefactos locales
 duplicate-tournament-manager/backend/bin/
+duplicate-tournament-manager/backend/server
+duplicate-tournament-manager/backend/cmd/server/server
+duplicate-tournament-manager/backend/cmd/server/server.bin
 duplicate-tournament-manager/backend/server.stdout
 duplicate-tournament-manager/backend/server.stderr
 duplicate-tournament-manager/backend/server.pid
+
+# Go caches locales (adicionales)
+duplicate-tournament-manager/backend/.gocache_local/
+duplicate-tournament-manager/backend/.gomodcache_local/
+*/.gocache_local/
+*/.gomodcache_local/
+
+# Dev server files
+devserver.pid
+devserver.stderr
+devserver.stdout
+server.pid
 
 # Lexicones grandes (se re-sembran desde la raíz si hace falta)
 lexica/*.kwg
 lexica/*.klv2
 lexica/*.kad
+lexica/*.bkp*
+
+# Strategy files (generated)
+strategy/
 
 # Logs y temporales
 *.log
@@ -29,6 +55,44 @@ err*.txt
 out.json
 tmp_req.json
 *.tgz
+tmp/
+_tmp/
+*.tmp
 
-# WASM/Rust artifacts (si existieran bajo DUPMAN)
+# Screenshots (keep docs, ignore random ones)
+*.png
+!docs/*.png
+Screenshot*.png
+
+# GCG samples (except intentional examples)
+*.gcg
+!sample*.gcg
+
+# RTF and other document drafts
+*.rtf
+
+# WASM/Rust artifacts (wolges)
 target/
+Cargo.lock
+
+# Python virtual environment
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Environment files with secrets
+.env
+.env.local
+.env.*.local
+
+# Local Claude settings
+.claude/settings.local.json
+
+# User-specific files
+*.local

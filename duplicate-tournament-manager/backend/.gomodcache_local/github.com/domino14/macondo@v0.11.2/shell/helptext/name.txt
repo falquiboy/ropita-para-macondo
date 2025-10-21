@@ -1,7 +1,0 @@
-name <1|2> <nickname> <fullname> - Set the player name for the given player.
-
-Usage:
-    
-    name 1 cesar César Del Solar
-
-The number is 1 for the player who went first, 2 for the second player.
