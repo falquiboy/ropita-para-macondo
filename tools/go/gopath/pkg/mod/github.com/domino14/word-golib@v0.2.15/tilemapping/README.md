@@ -1,1 +1,0 @@
-tilemapping - a library to interface between user-visible tiles such as "A" or "CH" and their 8-bit binary representations for word games.

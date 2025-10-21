@@ -96,3 +96,6 @@ __pycache__/
 
 # User-specific files
 *.local
+
+# Tools directory (Go toolchains, binaries)
+tools/

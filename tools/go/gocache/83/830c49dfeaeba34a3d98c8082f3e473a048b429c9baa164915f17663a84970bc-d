@@ -1,6 +1,0 @@
-./cache.go
-./hooks.go
-./kwg.go
-./kwg_anagrammer.go
-./lexicon.go
-./utils.go
