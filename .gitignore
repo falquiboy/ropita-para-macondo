@@ -41,13 +41,14 @@ devserver.stdout
 server.pid
 
 # Lexicones grandes (se re-sembran desde la raíz si hace falta)
-lexica/*.kwg
-lexica/*.klv2
-lexica/*.kad
-lexica/*.bkp*
-
-# Strategy files (generated)
+lexica/
 strategy/
+duplicate-tournament-manager/backend/lexica/
+duplicate-tournament-manager/backend/strategy/
+*.kwg
+*.klv2
+*.kad
+*.bkp*
 
 # Logs y temporales
 *.log
