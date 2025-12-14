@@ -2075,8 +2075,17 @@ async function refreshUnseenAtTurn(n){
           e.preventDefault();
         } else if (e.key === 'Enter'){
           // Apply previewed move
-          if (tnSelPos >= 0 && tnMoves && tnMoves[tnSelPos]){
-            const m = tnMoves[tnSelPos];
+          // Map visual position to original index via data-idx (table is sorted)
+          let applyIdx = tnSelPos;
+          try {
+            const tb = document.getElementById('tnTable');
+            if (tb) {
+              const tr = tb.querySelectorAll('tbody tr')[tnSelPos];
+              if (tr) applyIdx = Number(tr.getAttribute('data-idx') || '-1');
+            }
+          } catch (_) { }
+          if (applyIdx >= 0 && tnMoves && tnMoves[applyIdx]){
+            const m = tnMoves[applyIdx];
             const typ = String(m.type||'').toUpperCase();
             console.log('[Enter] Applying move:', m);
             if (!isAnalysis){
