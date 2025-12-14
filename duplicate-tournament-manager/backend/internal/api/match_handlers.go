@@ -149,11 +149,14 @@ func (m *MatchHandlers) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	id := genID("m")
+	log.Printf("[Create] Creating new session: id=%s, ruleset=%s, kwg=%s", id, in.Ruleset, in.KWG)
 	s, err := match.NewSession(id, in.Ruleset, in.KWG)
 	if err != nil {
+		log.Printf("[Create] ERROR creating session: %v", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	log.Printf("[Create] Session created successfully: id=%s", id)
 	if strings.EqualFold(strings.TrimSpace(in.Mode), "analysis") {
 		s.Analysis = true
 		// Initialize empty manual board (15 rows of 15 spaces)
@@ -232,9 +235,8 @@ func (m *MatchHandlers) Play(w http.ResponseWriter, r *http.Request) {
 	}
 	origPlayer := int(s.Game.PlayerOnTurn())
 	var oldRack string
+	mv := Move{Word: normalizeWordToBrackets(in.Word), Row: in.Row, Col: in.Col, Dir: strings.ToUpper(in.Dir)}
 	if in.FreeInput {
-		norm := normalizeWordToBrackets(in.Word)
-		mv := Move{Word: norm, Row: in.Row, Col: in.Col, Dir: strings.ToUpper(in.Dir)}
 		var errPrep error
 		oldRack, errPrep = m.prepareFreeInputRack(s, mv, in.Tokens)
 		if errPrep != nil {
@@ -244,6 +246,9 @@ func (m *MatchHandlers) Play(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err := s.PlayHuman(in.Word, matchCoords(in.Row, in.Col, in.Dir))
 	if err != nil {
+		// Don't use silent fallback - if PlayHuman fails (e.g., phony/invalid word),
+		// return error so frontend can show confirmation dialog and use /accept endpoint.
+		// This ensures user is warned before placing phonies.
 		if in.FreeInput {
 			revertFreeInput(s, origPlayer, oldRack)
 		}
@@ -995,11 +1000,22 @@ func (m *MatchHandlers) prepareFreeInputRack(s *match.Session, mv Move, tokens [
 			if inner == strings.ToLower(inner) {
 				sb.WriteString("?")
 			} else {
-				sb.WriteString("[" + strings.ToUpper(inner) + "]")
+				up := strings.ToUpper(inner)
+				if up == "CH" || up == "LL" || up == "RR" {
+					sb.WriteString("[" + up + "]")
+				} else {
+					sb.WriteString("[" + up + "]")
+				}
 			}
 			continue
 		}
-		sb.WriteString(strings.ToUpper(tk))
+		up := strings.ToUpper(tk)
+		// Normalize naked digraph tokens into bracket form for rack parsing
+		if up == "CH" || up == "LL" || up == "RR" {
+			sb.WriteString("[" + up + "]")
+			continue
+		}
+		sb.WriteString(up)
 	}
 	rackStr := strings.TrimSpace(sb.String())
 	if rackStr == "" {
@@ -1045,9 +1061,10 @@ func buildTilesForMove(s *match.Session, mv Move, tokens []string) (string, erro
 		}
 		row += dr
 		col += dc
-		if ml == 0 && ti >= len(tokens) {
-			break
-		}
+		// Note: Don't break early after placing last token - we need to continue
+		// including any board tiles that follow (e.g., placing "EN" before "CASA"
+		// should build "ENCASA", not just "EN"). The break at lines 1056-1058
+		// handles the case when we hit an empty cell after all tokens are placed.
 	}
 	if ti != len(tokens) {
 		return "", fmt.Errorf("unplaced tokens: expected %d, placed %d", len(tokens), ti)
@@ -1071,6 +1088,23 @@ func normalizePlacementToken(token string) string {
 		return strings.ToLower(t)
 	}
 	return strings.ToUpper(t)
+}
+
+// applyPlacementDirect attempts to build and apply a placement move using explicit tokens.
+// This is a fallback when PlayHuman doesn't find the move (e.g., orientation pruned).
+func (m *MatchHandlers) applyPlacementDirect(s *match.Session, mv Move, tokens []string) error {
+	g := s.Game
+	coords := move.ToBoardGameCoords(mv.Row, mv.Col, strings.ToUpper(mv.Dir) == "V")
+	rackStr := g.RackFor(g.PlayerOnTurn()).String()
+	tiles, err := buildTilesForMove(s, mv, tokens)
+	if err != nil {
+		return err
+	}
+	play, err := g.CreateAndScorePlacementMove(coords, tiles, rackStr, false)
+	if err != nil {
+		return err
+	}
+	return g.PlayMove(play, true, 0)
 }
 
 func normalizeRackInput(rack string) string {
@@ -1912,9 +1946,10 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+
+	// If we're at the current/latest turn, copy the manually-set racks from s.Game
+	// This ensures that manual rack definitions are used for move generation
 	if turn == maxTurn {
-		// When we're at the current/latest turn, copy the current racks from s.Game
-		// This ensures manually-set racks are preserved for analysis/simulation
 		log.Printf("[MovesAt] At current turn %d, copying racks from s.Game - rack_0: %s, rack_1: %s",
 			turn, s.Game.RackFor(0).String(), s.Game.RackFor(1).String())
 

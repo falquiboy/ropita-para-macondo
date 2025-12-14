@@ -37,6 +37,16 @@ const (
 	AISim    AIMode = "sim"    // montecarlo simmer
 )
 
+const (
+	endgameSolveTimeout    = 45 * time.Second
+	preendgameSolveTimeout = 2 * time.Minute
+)
+
+var (
+	errEndgameTimedOut    = errors.New("endgame solver timed out")
+	errPreendgameTimedOut = errors.New("preendgame solver timed out")
+)
+
 // LogWriter interface for capturing bot logs
 type LogWriter interface {
 	io.Writer
@@ -748,13 +758,20 @@ func (s *Session) AIMove(mode AIMode, simIters, simPlies, topK, simThreads int) 
 	opp := s.Game.RackFor(s.Game.NextPlayer()).NumTiles()
 	unseen := int(opp) + tr
 
-	// Use perfect algorithms when applicable (following Macondo's elite bot logic)
+	// Use perfect algorithms when applicable (following Macondo's elite bot logic),
+	// but fall back to regular AI if they fail or time out.
 	if unseen <= 7 {
-		// ENDGAME: ≤7 tiles unseen - use perfect endgame solver
-		return s.perfectEndgame()
+		if mv, err := s.perfectEndgame(); err == nil {
+			return mv, nil
+		} else {
+			log.Printf("perfect endgame solver unavailable, falling back to %s mode: %v", mode, err)
+		}
 	} else if unseen == 8 {
-		// PREENDGAME: exactly 8 tiles unseen - use preendgame solver
-		return s.perfectPreendgame()
+		if mv, err := s.perfectPreendgame(); err == nil {
+			return mv, nil
+		} else {
+			log.Printf("preendgame solver unavailable, falling back to %s mode: %v", mode, err)
+		}
 	}
 
 	// Continue with existing simulation logic for mid-game
@@ -993,8 +1010,11 @@ func (s *Session) perfectEndgame() (*move.Move, error) {
 		return nil, fmt.Errorf("failed to create endgame bot: %w", err)
 	}
 
+	startTime := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), endgameSolveTimeout)
+	defer cancel()
+
 	// Create context with custom logger for capturing logs
-	ctx := context.Background()
 	if s.logWriter != nil {
 		// Create a logger that writes to our log buffer
 		logger := zerolog.New(s.logWriter).With().
@@ -1007,6 +1027,16 @@ func (s *Session) perfectEndgame() (*move.Move, error) {
 	// BestPlay automatically detects endgame scenario and uses perfect solver
 	bestMove, err := botPlayer.BestPlay(ctx)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
+			if s.logWriter != nil {
+				logger := zerolog.New(s.logWriter).With().
+					Timestamp().
+					Str("component", "endgame").
+					Logger()
+				logger.Warn().Dur("duration", time.Since(startTime)).Msg("endgame solver timed out")
+			}
+			return nil, errEndgameTimedOut
+		}
 		return nil, fmt.Errorf("endgame solver failed: %w", err)
 	}
 
@@ -1063,7 +1093,9 @@ func (s *Session) perfectEndgame() (*move.Move, error) {
 			Timestamp().
 			Str("component", "endgame").
 			Logger()
-		logger.Info().Msg("endgame move applied successfully")
+		logger.Info().
+			Dur("duration", time.Since(startTime)).
+			Msg("endgame move applied successfully")
 	}
 
 	return bestMove, nil
@@ -1087,7 +1119,7 @@ func (s *Session) perfectPreendgame() (*move.Move, error) {
 	}
 
 	// Create context with timeout to prevent hanging
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), preendgameSolveTimeout)
 	defer cancel()
 	if s.logWriter != nil {
 		// Create a logger that writes to our log buffer
@@ -1121,7 +1153,7 @@ func (s *Session) perfectPreendgame() (*move.Move, error) {
 	if s.logWriter != nil {
 		if err != nil {
 			// Check if it was a timeout
-			if ctx.Err() == context.DeadlineExceeded {
+			if errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
 				s.logWriter.Write([]byte(fmt.Sprintf(`{"time":"%s","level":"error","component":"preendgame","message":"BestPlay() timed out after %v","duration":"%s"}`+"\n",
 					time.Now().Format(time.RFC3339), duration, duration.String())))
 			} else {
@@ -1135,8 +1167,8 @@ func (s *Session) perfectPreendgame() (*move.Move, error) {
 	}
 
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil, fmt.Errorf("preendgame solver timed out after %v", duration)
+		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
+			return nil, errPreendgameTimedOut
 		}
 		return nil, fmt.Errorf("preendgame solver failed: %w", err)
 	}

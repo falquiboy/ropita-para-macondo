@@ -1283,8 +1283,10 @@ async function refreshUnseen(){
       function rackHas(tok){ return (rackCounts[tok]||0) > 0; }
       function tryPlaceToken(token){
         if (startCell == null) return; // typing indicator not set
-        // Preserve assigned blank notation in analysis (lowercase single or [ch]/[ll]/[rr])
-        if (!(isAnalysis && (/^[a-zñ]$/.test(String(token||'')) || /^\[(ch|ll|rr)\]$/.test(String(token||''))))){
+        // Preserve assigned blank notation (lowercase single or [ch]/[ll]/[rr]) - ALWAYS, not just in analysis mode
+        // Lowercase letters represent blanks assigned to that letter
+        const isBlankNotation = /^[a-zñ]$/.test(String(token||'')) || /^\[(ch|ll|rr)\]$/.test(String(token||''));
+        if (!isBlankNotation){
           token = mapInputToken(token);
         }
         // Find first placeable cell BEFORE consuming from rack, to avoid losing tiles on overflow
@@ -1358,8 +1360,17 @@ async function refreshUnseen(){
             e.preventDefault(); return;
           }
         }
-        // Escape: recall all pending placements to rack from anywhere
-        if (k === 'Escape') { recallAll(); e.preventDefault(); return; }
+        // Escape: recall all pending placements to rack from anywhere, and clear board preview in bot view mode
+        if (k === 'Escape') {
+          recallAll();
+          // Clear preview in bot view mode
+          previewPlacements = {};
+          lastHighlight = null;
+          tnSelPos = -1;
+          renderMatchBoard();
+          e.preventDefault();
+          return;
+        }
         if (draggingKind) return; // ignore other keystrokes during drag
         // Do not hijack typing when the user is focused on an input/textarea/select or contenteditable
         const ae = document.activeElement;
@@ -1372,17 +1383,22 @@ async function refreshUnseen(){
         if(k === 'Enter'){ /* handled elsewhere to submit */ return; }
         if(k === 'Backspace'){ recallLast(); e.preventDefault(); return; }
         if(k.length===1){
-          // Analysis: Shift + letra -> comodín asignado (minúscula)
-          if (isAnalysis && /[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(k) && e.shiftKey){
-            const low = k.toLowerCase(); flushPendingKey(); tryPlaceToken(low); e.preventDefault(); return;
+          // Shift + letra -> SIEMPRE coloca comodín representando esa letra (minúscula)
+          // Esta acción es universal e inambigua, no depende del modo
+          if (e.shiftKey && /[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(k)){
+            const low = k.toLowerCase();
+            flushPendingKey(); tryPlaceToken(low); e.preventDefault(); return;
           }
-          // Analysis: '?' debe mapearse a una asignación específica (no dejar indefinido)
-          if (isAnalysis && k === '?'){
+          // '?' abre diálogo para asignar letra al comodín
+          if (k === '?'){
             const a = prompt('Asigna letra al comodín (A–Z, Ñ, CH, LL, RR):', 'A');
             const mapped = placedTokenForBlankAssignment(a||'');
             if (mapped){ flushPendingKey(); tryPlaceToken(mapped); }
             e.preventDefault(); return;
           }
+          // Check if we're in analysis-like mode for other features
+          const showBotRackChecked = document.getElementById('showBotRack')?.checked;
+          const analysisLike = isAnalysis || (matchMode === 'sim' && showBotRackChecked) || freeInputEnabled;
           let ch = mapInputToken(k);
           // Immediate digraph shortcuts via Ç/K/W
           if (ch === '[CH]' || ch === '[LL]' || ch === '[RR]'){
@@ -1395,9 +1411,9 @@ async function refreshUnseen(){
           const mergeIfPossible = () => {
             if (!pendingKey) return false;
             const pair = (pendingKey + ch).toUpperCase();
-            if (pair === 'CH' && (isAnalysis || rackHas('[CH]'))){ tryPlaceToken(isAnalysis && e.shiftKey ? '[ch]' : '[CH]'); pendingKey=null; return true; }
-            if (pair === 'LL' && (isAnalysis || rackHas('[LL]'))){ tryPlaceToken(isAnalysis && e.shiftKey ? '[ll]' : '[LL]'); pendingKey=null; return true; }
-            if (pair === 'RR' && (isAnalysis || rackHas('[RR]'))){ tryPlaceToken(isAnalysis && e.shiftKey ? '[rr]' : '[RR]'); pendingKey=null; return true; }
+            if (pair === 'CH' && (analysisLike || rackHas('[CH]'))){ tryPlaceToken(analysisLike && e.shiftKey ? '[ch]' : '[CH]'); pendingKey=null; return true; }
+            if (pair === 'LL' && (analysisLike || rackHas('[LL]'))){ tryPlaceToken(analysisLike && e.shiftKey ? '[ll]' : '[LL]'); pendingKey=null; return true; }
+            if (pair === 'RR' && (analysisLike || rackHas('[RR]'))){ tryPlaceToken(analysisLike && e.shiftKey ? '[rr]' : '[RR]'); pendingKey=null; return true; }
             return false;
           };
           if (mergeIfPossible()){
@@ -1771,7 +1787,8 @@ async function refreshUnseen(){
           const tokensToPlain = (s)=>{ const t=tokensFromBracketStr(String(s||'')); return t.map(x=> (x.startsWith('[')&&x.endsWith(']'))? x.slice(1,-1) : x).join(''); };
           const arr = tnMoves.map((m,i)=>{
             const coordES = coordsStr(m.row|0, m.col|0, m.dir||'H');
-            const arrow = (String(m.dir||'H').toUpperCase()==='V') ? '(↓)' : '(→)';
+            const dir = String(m.dir||'H').toUpperCase();
+            const arrow = (dir==='V') ? '(↓)' : '(→)';
             const key = `${coordES} ${arrow}|${String(m.word||'')}`;
             const statRank = tnStaticRank.get(key) || '';
             const eq = (typeof m.equity==='number'? m.equity : Number(m.equity||0)).toFixed(2);
@@ -1781,9 +1798,12 @@ async function refreshUnseen(){
             if (typ === 'EXCH') dispWord = `exch ${tokensToPlain(m.word)}`;
             else if (typ === 'PASS') dispWord = 'pass';
             else dispWord = wordWithAnchor(m);
-            return { idx:i, coord:`${coordES} ${arrow}`, word:dispWord, leave:String(m.leave||''), eq, score: sc, statRank };
+            return { idx:i, dir, coord:`${coordES} ${arrow}`, word:dispWord, leave:String(m.leave||''), eq, score: sc, statRank };
           }).sort((a,b)=> Number(b.eq) - Number(a.eq));
-          const rows = arr.slice(0, 50).map((r,i)=>{
+          const topN = Math.max(1, Math.min(200, parseInt($('#topN').value||'50',10)||50));
+          // Usar orden estricto por equity, sin intercalar H/V
+          const rowsArr = arr.slice(0, topN);
+          const rows = rowsArr.map((r,i)=>{
             const moveKey = `${r.coord}|${r.word}`;
             const stat = r.statRank || '';
             return `<tr data-idx="${r.idx}"><td>${i+1}</td><td>${r.score|0}</td><td>${r.eq}</td><td>${stat}</td><td>${r.coord}</td><td>${r.word}</td><td>${r.leave}</td></tr>`;
@@ -2260,9 +2280,51 @@ async function refreshUnseenAtTurn(n){
         const msg = String(errMsg||'').toLowerCase();
         return msg.includes('invalid words') || msg.includes('word not valid') || msg.includes('word is invalid') || msg.includes('move not valid') || msg.includes('illegal move') || msg.includes('no está en el diccionario');
       }
+      // Build full word including board anchors for display
+      function buildFullWordForDisplay(payload){
+        if (!payload || payload.row == null || payload.col == null) return payload?.word || '';
+        let r = payload.row, c = payload.col;
+        const dr = payload.dir === 'V' ? 1 : 0;
+        const dc = payload.dir === 'H' ? 1 : 0;
+        const tokens = payload.tokens || [];
+        let ti = 0;
+        let result = [];
+        // Walk from start position, interleaving board tiles and placed tokens
+        while (r >= 0 && r < 15 && c >= 0 && c < 15) {
+          const idx = r * 15 + c;
+          const boardTile = (matchBoardState[idx] || '').trim();
+          if (boardTile) {
+            // Board has a tile here - include it
+            result.push(boardTile);
+          } else {
+            // Empty cell - use placed token if available
+            if (ti >= tokens.length) break;
+            result.push(tokens[ti]);
+            ti++;
+          }
+          r += dr;
+          c += dc;
+          // After placing last token, continue to include trailing board tiles
+          if (ti >= tokens.length) {
+            // Check next position for more board tiles
+            const nextIdx = r * 15 + c;
+            const nextTile = (matchBoardState[nextIdx] || '').trim();
+            if (!nextTile) break; // No more board tiles, we're done
+          }
+        }
+        return result.join('');
+      }
       async function forcePhonyPlay(payload, errMsg){
-        if (!payload || !looksLikeInvalidWord(errMsg)) return false;
-        const confirmMsg = errMsg ? `La jugada fue rechazada (${errMsg}). ¿Forzarla igualmente?` : 'La jugada fue rechazada. ¿Forzarla igualmente?';
+        if (!payload) return false;
+        const cleanErr = (errMsg && String(errMsg).trim()) ? String(errMsg).trim() : '';
+        const isPhony = looksLikeInvalidWord(cleanErr);
+        let confirmMsg;
+        if (isPhony) {
+          const fullWord = buildFullWordForDisplay(payload);
+          confirmMsg = `⚠️ PHONY DETECTADO ⚠️\n\nLa palabra "${fullWord}" no está en el diccionario.\n\n¿Desea colocarla de todas formas?\n\n(Esto simula una jugada no impugnada en partida real)`;
+        } else {
+          confirmMsg = cleanErr ? `La jugada fue rechazada (${cleanErr}). ¿Forzarla igualmente?` : 'La jugada fue rechazada. ¿Forzarla igualmente?';
+        }
         if (!window.confirm(confirmMsg)) return false;
         try{
           const res = await fetch(`/matches/${matchId}/accept`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
@@ -2333,14 +2395,13 @@ async function refreshUnseenAtTurn(n){
               const j = await res.json();
               if (!j || j.error){
                 lastErr = (j && j.error) || 'error';
-                if (!fallbackPayload && looksLikeInvalidWord(lastErr)) {
-                  fallbackPayload = body;
-                }
+                if (!fallbackPayload) { fallbackPayload = body; }
                 continue;
               }
               ok = true; break;
             }
             if (!ok){
+              if (fallbackPayload){ fallbackPayload.free_input = true; }
               const forced = await forcePhonyPlay(fallbackPayload, lastErr);
               if (!forced){
                 alert(lastErr || 'Jugada ilegal'); return;
@@ -2472,13 +2533,23 @@ async function refreshUnseenAtTurn(n){
         }
       }
       function normalizeExchangeTiles(raw){
+        // For exchange, don't auto-group into digraphs - preserve individual letters
+        // Only uppercase and remove spaces, keep explicit brackets
         let s = String(raw||'').toUpperCase().replace(/\s+/g,'');
         let out = '';
         for (let i=0; i<s.length; i++){
           const ch = s[i];
-          if (ch === '['){ const j = s.indexOf(']', i+1); if (j>i){ out += s.slice(i,j+1).toUpperCase(); i=j; continue; } }
-          const dig2 = s.slice(i,i+2);
-          if (dig2==='CH' || dig2==='LL' || dig2==='RR'){ out += '['+dig2+']'; i+=1; continue; }
+          // Preserve explicit digraph notation like [CH], [LL], [RR]
+          if (ch === '['){
+            const j = s.indexOf(']', i+1);
+            if (j>i){
+              out += s.slice(i,j+1).toUpperCase();
+              i=j;
+              continue;
+            }
+          }
+          // DON'T auto-group consecutive letters into digraphs for exchange
+          // Just add the letter as-is
           out += ch;
         }
         return out;
@@ -2626,12 +2697,19 @@ async function refreshUnseenAtTurn(n){
             if (!freeInputEnabled) rebuildRackCounts();
           };
         }
-        // Submit with Enter: if focused on exchange input, do exchange; otherwise submit play
+        // Submit with Enter: if focused on exchange input, do exchange; if on rack input, apply rack; otherwise submit play
         document.addEventListener('keydown', (e)=>{
           if (!matchId || e.key !== 'Enter') return;
           const ae = document.activeElement;
           if (ae && ae.id === 'matchExchangeTiles') {
             doExchange();
+            e.preventDefault();
+            return;
+          }
+          // If focused on manual rack input, apply the rack
+          if (ae && ae.id === 'anRackOnTurn') {
+            const applyBtn = document.getElementById('anApplyRacks');
+            if (applyBtn) applyBtn.click();
             e.preventDefault();
             return;
           }
@@ -2784,7 +2862,7 @@ async function refreshUnseenAtTurn(n){
 
       function renderMovesList(all){
         if(!Array.isArray(all)) { movesDiv.innerHTML = '<em>No moves</em>'; return; }
-        const topN = Math.max(1, Math.min(200, parseInt($('#topN').value||'25',10)||25));
+        const topN = Math.max(1, Math.min(200, parseInt($('#topN').value||'50',10)||50));
         const normWord = (s)=> s || '';
         const toNum = (v)=>{
           if (v == null) return null;
@@ -2933,7 +3011,7 @@ async function refreshUnseenAtTurn(n){
         const engine = ($('#engine')?.value||'macondo');
         const mode = ($('#mode')?.value||'static');
         if (mode === 'sim') {
-          const topN = Math.max(1, Math.min(50, parseInt($('#topN').value||'25',10)||25));
+          const topN = Math.max(1, Math.min(50, parseInt($('#topN').value||'50',10)||50));
           req.mode = 'sim';
           // Conservative defaults to avoid timeouts
           req.sim = { iters: 1500, plies: 4, threads: Math.max(4, Math.floor(threads * 0.8)), topK: Math.min(50, topN) };
