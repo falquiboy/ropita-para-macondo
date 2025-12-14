@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/domino14/macondo/ai/bot"
 	aitp "github.com/domino14/macondo/ai/turnplayer"
@@ -981,18 +982,191 @@ func (s *Session) recordPlayEvent(player int, pm *move.Move) {
 	if v {
 		dir = "V"
 	}
-	// TilesString returns anchors and lowercase blanks; strip anchors
-	tiles := strings.ReplaceAll(pm.TilesString(), ".", "")
-	// Derive main word formed from the board after applying the move
-	word := s.mainWordAt(r, c, dir)
+	// Build display word with anchor notation and blank lowercase
+	word := s.buildWordDisplay(pm)
 	sc := pm.Score()
 	// Cum score after this move for the player
 	// We compute cumulative from game directly to be accurate
 	cum := s.Game.PointsFor(player)
 	if word == "" {
-		word = tiles
+		word = strings.ReplaceAll(pm.TilesString(), ".", "")
 	}
 	s.appendHist(HistRow{Ply: len(s.hist) + 1, Player: player, Type: "PLAY", Word: word, Row: r, Col: c, Dir: dir, Score: sc, Cum: cum})
+}
+
+// buildWordDisplay builds a display string for the word with anchor notation and blank lowercase.
+// Anchors (play-through tiles) are wrapped in parentheses, blanks are lowercase.
+// Example: CO(RA)ZOn(E)S where RA and E are anchors, n is a blank.
+// This function expands the word to include letters before/after the move's range.
+func (s *Session) buildWordDisplay(pm *move.Move) string {
+	// TilesString returns "." for play-through (anchor) positions and lowercase for blanks
+	tilesStr := pm.TilesString()
+	if tilesStr == "" {
+		return ""
+	}
+	r, c, v := pm.CoordsAndVertical()
+	dr, dc := 0, 1
+	if v {
+		dr, dc = 1, 0
+	}
+	b := s.Game.Board()
+	alph := s.Game.Alphabet()
+
+	// Tokenize tilesStr to handle digraphs like [CH]
+	tokens := tokenizeTilesString(tilesStr)
+
+	type seg struct {
+		anchor bool
+		blank  bool
+		letter string
+	}
+	segs := []seg{}
+
+	// First, walk backward from move start to find letters that precede the move
+	// These are all anchors (pre-existing tiles)
+	prefixSegs := []seg{}
+	for pr, pc := r-dr, c-dc; pr >= 0 && pr < 15 && pc >= 0 && pc < 15; pr, pc = pr-dr, pc-dc {
+		ml := b.GetLetter(pr, pc)
+		if ml == 0 {
+			break
+		}
+		letter := alph.Letter(ml)
+		// Check if the tile is a blank (IsBlanked returns true for blank tiles)
+		if ml.IsBlanked() {
+			letter = strings.ToLower(letter)
+		} else {
+			letter = strings.ToUpper(letter)
+		}
+		prefixSegs = append([]seg{{anchor: true, blank: ml.IsBlanked(), letter: letter}}, prefixSegs...)
+	}
+	segs = append(segs, prefixSegs...)
+
+	// Process the move's tiles
+	rr, cc := r, c
+	for _, tk := range tokens {
+		if rr < 0 || rr >= 15 || cc < 0 || cc >= 15 {
+			break
+		}
+		if tk == "." {
+			// Anchor - read letter from board
+			ml := b.GetLetter(rr, cc)
+			letter := ""
+			isBlank := false
+			if ml != 0 {
+				letter = alph.Letter(ml)
+				isBlank = ml.IsBlanked()
+				if isBlank {
+					letter = strings.ToLower(letter)
+				} else {
+					letter = strings.ToUpper(letter)
+				}
+			}
+			segs = append(segs, seg{anchor: true, blank: isBlank, letter: letter})
+		} else {
+			// Placed tile - check if lowercase (blank)
+			isBlank := isLowercaseToken(tk)
+			letter := tk
+			if strings.HasPrefix(tk, "[") && strings.HasSuffix(tk, "]") {
+				letter = tk[1 : len(tk)-1]
+			}
+			if isBlank {
+				letter = strings.ToLower(letter)
+			} else {
+				letter = strings.ToUpper(letter)
+			}
+			segs = append(segs, seg{anchor: false, blank: isBlank, letter: letter})
+		}
+		rr += dr
+		cc += dc
+	}
+
+	// Walk forward from end of move to find letters that follow
+	// These are all anchors (pre-existing tiles)
+	for ; rr >= 0 && rr < 15 && cc >= 0 && cc < 15; rr, cc = rr+dr, cc+dc {
+		ml := b.GetLetter(rr, cc)
+		if ml == 0 {
+			break
+		}
+		letter := alph.Letter(ml)
+		// Check if the tile is a blank
+		if ml.IsBlanked() {
+			letter = strings.ToLower(letter)
+		} else {
+			letter = strings.ToUpper(letter)
+		}
+		segs = append(segs, seg{anchor: true, blank: ml.IsBlanked(), letter: letter})
+	}
+
+	// Build output with anchor parentheses
+	var out strings.Builder
+	for i := 0; i < len(segs); {
+		if !segs[i].anchor {
+			out.WriteString(segs[i].letter)
+			i++
+			continue
+		}
+		// Group consecutive anchors
+		j := i
+		var buf strings.Builder
+		for j < len(segs) && segs[j].anchor {
+			buf.WriteString(segs[j].letter)
+			j++
+		}
+		out.WriteString("(" + buf.String() + ")")
+		i = j
+	}
+	return out.String()
+}
+
+// tokenizeTilesString splits a TilesString into tokens, handling [digraph] notation and dots
+// Uses runes to properly handle UTF-8 characters like Ñ, ñ, á, é, etc.
+func tokenizeTilesString(s string) []string {
+	var tokens []string
+	runes := []rune(s)
+	i := 0
+	for i < len(runes) {
+		if runes[i] == '[' {
+			// Find closing bracket
+			j := i + 1
+			for j < len(runes) && runes[j] != ']' {
+				j++
+			}
+			if j < len(runes) {
+				tokens = append(tokens, string(runes[i:j+1]))
+				i = j + 1
+			} else {
+				tokens = append(tokens, string(runes[i]))
+				i++
+			}
+		} else {
+			tokens = append(tokens, string(runes[i]))
+			i++
+		}
+	}
+	return tokens
+}
+
+// isLowercaseToken checks if a token represents a blank (lowercase)
+// Uses unicode.IsLower for proper UTF-8 handling of ñ, á, é, etc.
+func isLowercaseToken(tk string) bool {
+	if tk == "" || tk == "." {
+		return false
+	}
+	// Handle bracketed digraph like [ch], [ñ]
+	if strings.HasPrefix(tk, "[") && strings.HasSuffix(tk, "]") {
+		inner := tk[1 : len(tk)-1]
+		runes := []rune(inner)
+		if len(runes) > 0 {
+			return unicode.IsLower(runes[0])
+		}
+		return false
+	}
+	// Single character - use runes for UTF-8
+	runes := []rune(tk)
+	if len(runes) > 0 {
+		return unicode.IsLower(runes[0])
+	}
+	return false
 }
 
 func (s *Session) appendHist(h HistRow) { s.hist = append(s.hist, h) }
@@ -1250,6 +1424,7 @@ func (s *Session) maybeAutoChallenge() {
 }
 
 // ScoreRows returns a minimal scoresheet either from engine history or from fallback history.
+// Prefers s.hist for Word field as it contains anchor/blank notation from buildWordDisplay.
 func (s *Session) ScoreRows() []HistRow {
 	h := s.Game.History()
 	evs := h.GetEvents()
@@ -1257,9 +1432,16 @@ func (s *Session) ScoreRows() []HistRow {
 		rows := make([]HistRow, 0, len(evs))
 		for i, e := range evs {
 			t := e.GetType().String()
+			// Prefer word from s.hist if available (has anchor/blank notation)
+			// s.hist has same structure as evs (all event types), so use same index
 			word := ""
-			if ws := e.GetWordsFormed(); len(ws) > 0 {
+			if i < len(s.hist) && s.hist[i].Word != "" {
+				word = s.hist[i].Word
+			} else if ws := e.GetWordsFormed(); len(ws) > 0 {
 				word = ws[0]
+			} else {
+				// Fallback: format PlayedTiles directly
+				word = formatPlayedTilesDisplay(e.GetPlayedTiles())
 			}
 			dir := "H"
 			if e.GetDirection() == pb.GameEvent_VERTICAL {
@@ -1275,6 +1457,57 @@ func (s *Session) ScoreRows() []HistRow {
 	}
 	// fallback
 	return append([]HistRow(nil), s.hist...)
+}
+
+// formatPlayedTilesDisplay formats PlayedTiles with anchor notation and blank lowercase.
+// Input example: "N.O" where . = anchor (play-through), lowercase = blank
+// Output example: "N(.)O" - anchors grouped in parentheses
+func formatPlayedTilesDisplay(played string) string {
+	if played == "" {
+		return ""
+	}
+	tokens := tokenizeTilesString(played)
+	type seg struct {
+		anchor bool
+		letter string
+	}
+	segs := []seg{}
+	for _, tk := range tokens {
+		if tk == "." {
+			segs = append(segs, seg{anchor: true, letter: "."})
+		} else {
+			isBlank := isLowercaseToken(tk)
+			letter := tk
+			if strings.HasPrefix(tk, "[") && strings.HasSuffix(tk, "]") {
+				letter = tk[1 : len(tk)-1]
+			}
+			if isBlank {
+				letter = strings.ToLower(letter)
+			} else {
+				letter = strings.ToUpper(letter)
+			}
+			segs = append(segs, seg{anchor: false, letter: letter})
+		}
+	}
+	// Build output with anchor parentheses
+	var out strings.Builder
+	for i := 0; i < len(segs); {
+		if !segs[i].anchor {
+			out.WriteString(segs[i].letter)
+			i++
+			continue
+		}
+		// Group consecutive anchors
+		j := i
+		var buf strings.Builder
+		for j < len(segs) && segs[j].anchor {
+			buf.WriteString(segs[j].letter)
+			j++
+		}
+		out.WriteString("(" + buf.String() + ")")
+		i = j
+	}
+	return out.String()
 }
 
 // HistAppend appends a fallback history row (analysis/manual mode).

@@ -857,29 +857,20 @@ func (m *MatchHandlers) ScoreSheet(w http.ResponseWriter, r *http.Request) {
 	}
 	sr := s.ScoreRows()
 	rows := make([]Row, 0, len(sr))
-	// Prefer macondo events if present to include PlayedTiles
-	if evs := s.Game.History().GetEvents(); len(evs) > 0 {
-		for i, e := range evs {
-			t := e.GetType().String()
-			word := ""
-			if ws := e.GetWordsFormed(); len(ws) > 0 {
-				word = ws[0]
-			}
-			dir := "H"
-			if e.GetDirection() == pb.GameEvent_VERTICAL {
-				dir = "V"
-			}
-			played := e.GetPlayedTiles()
+	// Use sr for Word (has anchor/blank notation), but get PlayedTiles from macondo events
+	evs := s.Game.History().GetEvents()
+	for i, e := range sr {
+		played := ""
+		// Get PlayedTiles from macondo event if available
+		if i < len(evs) {
+			ev := evs[i]
+			played = ev.GetPlayedTiles()
 			// For exchanges, use the exchanged tiles instead of played tiles
-			if t == "EXCHANGE" {
-				played = e.GetExchanged()
+			if e.Type == "EXCHANGE" {
+				played = ev.GetExchanged()
 			}
-			rows = append(rows, Row{Ply: i + 1, Player: int(e.GetPlayerIndex()), Type: t, Word: word, Played: played, Row: int(e.GetRow()), Col: int(e.GetColumn()), Dir: dir, Score: int(e.GetScore()), Cum: int(e.GetCumulative())})
 		}
-	} else {
-		for _, e := range sr {
-			rows = append(rows, Row{Ply: e.Ply, Player: e.Player, Type: e.Type, Word: e.Word, Played: "", Row: e.Row, Col: e.Col, Dir: e.Dir, Score: e.Score, Cum: e.Cum})
-		}
+		rows = append(rows, Row{Ply: e.Ply, Player: e.Player, Type: e.Type, Word: e.Word, Played: played, Row: e.Row, Col: e.Col, Dir: e.Dir, Score: e.Score, Cum: e.Cum})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": s.ID, "rows": rows})
 }
@@ -1607,12 +1598,36 @@ func bagKeyForToken(tk string) string {
 }
 
 // displayWordWithAnchors builds a string for history showing placed letters with anchor segments in paréntesis.
+// Blanks (comodines) are shown as lowercase letters.
+// Example output: CO(RA)ZOn(E)S where RA and E are anchors, n is a blank.
 func displayWordWithAnchors(beforeRows, afterRows []string, mv Move) string {
 	toPlain := func(tk string) string {
 		if strings.HasPrefix(tk, "[") && strings.HasSuffix(tk, "]") {
 			return tk[1 : len(tk)-1]
 		}
 		return tk
+	}
+	// Check if a token represents a blank (lowercase letter or lowercase digraph)
+	isBlankToken := func(tk string) bool {
+		tk = strings.TrimSpace(tk)
+		if tk == "" {
+			return false
+		}
+		// Check for bracketed digraph like [ch], [ll], [rr]
+		if strings.HasPrefix(tk, "[") && strings.HasSuffix(tk, "]") {
+			inner := tk[1 : len(tk)-1]
+			if len(inner) > 0 {
+				r := []rune(inner)
+				return r[0] >= 'a' && r[0] <= 'z'
+			}
+			return false
+		}
+		// Single letter - check if lowercase
+		r := []rune(tk)
+		if len(r) == 1 {
+			return (r[0] >= 'a' && r[0] <= 'z') || r[0] == 'ñ' || r[0] == 'á' || r[0] == 'é' || r[0] == 'í' || r[0] == 'ó' || r[0] == 'ú' || r[0] == 'ü'
+		}
+		return false
 	}
 	board := func(rows []string) [][]string {
 		out := make([][]string, 15)
@@ -1647,35 +1662,54 @@ func displayWordWithAnchors(beforeRows, afterRows []string, mv Move) string {
 		}
 		sr, sc = nr, nc
 	}
-	// consume until break
+	// Tokenize mv.Word to identify which placed tiles are blanks
+	placedTokens := tokenizeRow(mv.Word)
+	placedBlanks := make([]bool, len(placedTokens))
+	for i, pt := range placedTokens {
+		placedBlanks[i] = isBlankToken(pt)
+	}
+	// consume until break, tracking blanks
 	type seg struct {
 		anchor bool
+		blank  bool
 		tok    string
 	}
 	segs := []seg{}
 	rr, cc := sr, sc
+	placedIdx := 0 // index into placedTokens
 	for rr >= 0 && rr < 15 && cc >= 0 && cc < 15 {
 		tk := b1[rr][cc]
 		if strings.TrimSpace(tk) == "" {
 			break
 		}
 		isAnchor := strings.TrimSpace(b0[rr][cc]) != ""
-		segs = append(segs, seg{anchor: isAnchor, tok: toPlain(tk)})
+		isBlank := false
+		if !isAnchor && placedIdx < len(placedBlanks) {
+			isBlank = placedBlanks[placedIdx]
+			placedIdx++
+		}
+		segs = append(segs, seg{anchor: isAnchor, blank: isBlank, tok: toPlain(tk)})
 		rr += dr
 		cc += dc
 	}
-	// merge anchors into parenthesized blocks
+	// merge anchors into parenthesized blocks, preserve blank lowercase
 	var out strings.Builder
 	for i := 0; i < len(segs); {
 		if !segs[i].anchor {
-			out.WriteString(segs[i].tok)
+			tok := segs[i].tok
+			if segs[i].blank {
+				tok = strings.ToLower(tok)
+			} else {
+				tok = strings.ToUpper(tok)
+			}
+			out.WriteString(tok)
 			i++
 			continue
 		}
 		j := i
 		var buf strings.Builder
 		for j < len(segs) && segs[j].anchor {
-			buf.WriteString(segs[j].tok)
+			buf.WriteString(strings.ToUpper(segs[j].tok))
 			j++
 		}
 		out.WriteString("(" + buf.String() + ")")
