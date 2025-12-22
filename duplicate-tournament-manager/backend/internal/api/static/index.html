@@ -1449,7 +1449,46 @@ async function refreshUnseen(){
         rackTokensArr = tokensFromBracketStr(window._currentRack||''); rebuildRackCounts();
         // Aplicar orden persistente del rack
         try{ const saved = localStorage.getItem('rackOrder'); if(saved){ applyRackOrder(saved); const sel=document.getElementById('matchRackOrder'); if(sel) sel.value=saved; } }catch(_){ }
-        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}${isAnalysis?' (Análisis)':''}`); initMatchBoard(); document.getElementById('analysisSidebar').style.display = isAnalysis ? 'block' : 'none'; updateToggleUI(true); window._viewMode='analysis'; applyHistoryViewMode(); await refreshUnseen(); await refreshHistory(); updateEndgameUI(j); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } clearBotLogs(); startLogStream(); }
+        setMatchRackText(); matchBoardState = [].concat(...j.board_rows.map(r=>tokensFromBracketStr(r).slice(0,15).map(x=>x===' '? ' ': x))).slice(0,225); matchBonusRows = j.bonus_rows || null; document.getElementById('matchScore').textContent = (j.score? j.score.join('-') : '0-0'); setMatchInfo(`Match ${matchId}${isAnalysis?' (Análisis)':''}`); initMatchBoard(); document.getElementById('analysisSidebar').style.display = isAnalysis ? 'block' : 'none'; updateToggleUI(true); window._viewMode='analysis'; applyHistoryViewMode(); await refreshUnseen(); await refreshHistory(); updateEndgameUI(j); if(sim){ document.getElementById('matchAIMode').value='sim'; matchMode='sim'; } clearBotLogs(); startLogStream();
+        // For sim mode with showBotRack, force DOM relocation and generate moves
+        const showBotRackToggle = document.getElementById('showBotRack')?.checked || false;
+        if (sim && showBotRackToggle) {
+          // Use setTimeout to ensure DOM is fully ready
+          setTimeout(async () => {
+            const sidebar = document.getElementById('historySidebar');
+            const turnMoves = document.getElementById('turnMoves');
+            const nav = document.getElementById('turnNav');
+            const hist = document.getElementById('matchHistory');
+            const tnRacks = document.getElementById('tnRacks');
+            const analysisSidebar = document.getElementById('analysisSidebar');
+
+            // Save original parents
+            if (!window._origTurnMovesParent) window._origTurnMovesParent = turnMoves?.parentElement || null;
+            if (!window._origTurnNavParent) window._origTurnNavParent = nav?.parentElement || null;
+
+            // Force relocation
+            if (sidebar && turnMoves && hist) {
+              sidebar.insertBefore(turnMoves, hist);
+              turnMoves.style.maxHeight = 'calc(24px*20 + 19*2px)';
+              turnMoves.style.overflowY = 'auto';
+              turnMoves.style.display = 'block';
+            }
+            if (sidebar && nav && hist) {
+              sidebar.insertBefore(nav, turnMoves);
+              nav.style.marginTop = '6px';
+              nav.style.display = 'flex';
+            }
+            if (hist) hist.style.display = 'none';
+            if (analysisSidebar) analysisSidebar.style.display = 'block';
+            if (tnRacks) tnRacks.style.display = 'block';
+            window._relocated = true;
+
+            // Sync and generate moves
+            await syncTurnNavData({turn: matchOnTurn});
+            await genTurnMoves();
+          }, 100);
+        }
+      }
       async function refreshMatch(){ if(!matchId) return; const j = await (await fetch(`/matches/${matchId}`)).json(); isAnalysis = !!j.analysis; matchOnTurn = Number(j.turn||0)|0; window._ruleset = j.ruleset||window._ruleset||'OSPS49'; window._lexicon = j.lexicon||window._lexicon||''; window._currentRack = (matchOnTurn===0? (j.rack_you||j.rack||'') : (j.rack_bot||''));
         // Preserve user's custom rack order in vs-bot mode
         const preserveOrder = !isAnalysis && matchOnTurn === 0 && rackTokensArr && rackTokensArr.length > 0;
@@ -1461,7 +1500,6 @@ async function refreshUnseen(){
     const analysisActiveNow = isAnalysis || (matchMode === 'sim' && showBotRackToggle);
     const showBotRack = isBotTurn && matchMode === 'sim' && showBotRackToggle;
     const rackSource = isAnalysis ? (window._currentRack||'') : (showBotRack ? (j.rack_bot||'') : (j.rack_you||j.rack||''));
-    console.log('[DEBUG] refreshMatch - isBotTurn:', isBotTurn, 'matchMode:', matchMode, 'showBotRackToggle:', showBotRackToggle, 'analysisActive:', analysisActiveNow, 'showBotRack:', showBotRack, 'rackSource:', rackSource, 'j.rack_bot:', j.rack_bot, 'j.rack_you:', j.rack_you);
         rackTokensArr = tokensFromBracketStr(rackSource); rebuildRackCounts();
 
         // In vs-bot mode, try to preserve user's tile arrangement
@@ -1615,7 +1653,7 @@ async function refreshUnseen(){
         }catch(_){ autoPassInFlight = false; }
         // Tiles mapping updated via refreshUnseen()
       }
-      async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); console.log('[DEBUG] refreshHistory response:', j); if(j && Array.isArray(j.rows)){ window.lastHistoryRows = j.rows; computeLastHighlightFromRows(j.rows); endReason = computeEndReasonFromRows(j.rows); renderHistoryGrouped(j.rows); renderMatchBoard(); } } catch(e){ console.error('[DEBUG] refreshHistory error:', e); } }
+      async function refreshHistory(){ if(!matchId) return; try{ const r = await fetch(`/matches/${matchId}/scoresheet`); const j = await r.json(); if(j && Array.isArray(j.rows)){ window.lastHistoryRows = j.rows; computeLastHighlightFromRows(j.rows); endReason = computeEndReasonFromRows(j.rows); renderHistoryGrouped(j.rows); renderMatchBoard(); } } catch(e){ console.error('refreshHistory error:', e); } }
       function computeLastHighlightFromRows(rows){
         try{
           if (!Array.isArray(rows) || rows.length===0) { lastHighlight=null; return; }
@@ -2149,22 +2187,14 @@ async function refreshUnseenAtTurn(n){
       // Grouped renderer: both players in same row; per player show Coord, Word, Pts, Cum
       function renderHistoryGrouped(rows){
         const div = document.getElementById('matchHistory'); if(!div) return;
-        console.log(`[DEBUG] renderHistoryGrouped called with ${rows?.length || 0} rows:`, rows);
-        console.log('[DEBUG] Console logging is working!'); // Test log
         const rounds = [];
         for (const r of (rows||[])){
-          console.log(`[DEBUG] Processing row - Player: ${r.player}, Type: "${r.type}", Word: "${r.word}", Played: "${r.played}", Score: ${r.score}, Ply: ${r.ply}`);
-          console.log(`[DEBUG] Full row object:`, r);
           const idx = Math.floor(((r.ply||1)-1)/2);
           if (!rounds[idx]) rounds[idx] = { n: idx+1, you: null, bot: null };
           const typ = String(r.type||'').toUpperCase();
           const isMeta = (typ==='EXCH' || typ==='EXCHANGE' || typ==='PASS');
           const coord = isMeta ? '' : ((r.row>=0 && r.col>=0) ? coordsStr(r.row, r.col, r.dir) : '');
           const cell = { word: r.word||'', played: r.played||'', coord, score: r.score||0, type: typ, cum: r.cum||0 };
-          // DEBUG: Log exchange events
-          if (typ === 'EXCHANGE' || typ === 'EXCH') {
-            console.log(`[DEBUG] Exchange event - Player: ${r.player}, Type: ${typ}, Word: "${r.word}", Played: "${r.played}", Score: ${r.score}, Ply: ${r.ply}`);
-          }
           if (r.player === 0) rounds[idx].you = cell; else rounds[idx].bot = cell;
         }
         const sc = (window.historyScore||[0,0]);
@@ -2203,7 +2233,6 @@ async function refreshUnseenAtTurn(n){
             const source = y.word || y.played || '';
             const tiles = tokensToPlain(source);
             yt = tiles ? `exch ${tiles}` : 'exch';
-            console.log(`[DEBUG] User exchange format: "${yt}" from word: "${y.word}", played: "${y.played}", source: "${source}"`);
           } else if (String(y.type||'').toUpperCase()==='PASS') {
             yt = 'pass';
           }
@@ -2215,7 +2244,6 @@ async function refreshUnseenAtTurn(n){
             const tiles = tokensToPlain(source);
             const count = tiles ? tiles.length : 0;
             bt = count > 0 ? `exch ${count}` : 'exch';
-            console.log(`[DEBUG] Bot exchange format: "${bt}" from word: "${b.word}", played: "${b.played}", source: "${source}" (count: ${count})`);
           } else if (String(b.type||'').toUpperCase()==='PASS') {
             bt = 'pass';
           }
