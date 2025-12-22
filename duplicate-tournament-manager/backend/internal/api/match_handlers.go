@@ -1981,9 +1981,27 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If we're at the current/latest turn, copy the manually-set racks from s.Game
-	// This ensures that manual rack definitions are used for move generation
-	if turn == maxTurn {
+	// Determine player index - for historical turns, default to the player from the event
+	rawPlayer := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("player")))
+	playerIdx := 0
+	historicalPlayerIdx := -1 // Will be set for historical turns
+
+	// For historical turns, use the rack from the event (the rack BEFORE playing that turn)
+	// For current/latest turn, use the manually-set racks from s.Game
+	if turn < maxTurn && turn < len(hist.Events) {
+		evt := hist.Events[turn]
+		historicalRack := evt.GetRack()
+		historicalPlayerIdx = int(evt.GetPlayerIndex())
+		log.Printf("[MovesAt] Historical turn %d: using rack from event: %s (player %d)",
+			turn, historicalRack, historicalPlayerIdx)
+		rack := tilemapping.RackFromString(historicalRack, s.LD.TileMapping())
+		if rack != nil {
+			ng.SetPlayerOnTurn(historicalPlayerIdx)
+			if err := ng.SetRackForOnly(historicalPlayerIdx, rack); err != nil {
+				log.Printf("[MovesAt] Unable to set historical rack: %v", err)
+			}
+		}
+	} else if turn == maxTurn {
 		log.Printf("[MovesAt] At current turn %d, copying racks from s.Game - rack_0: %s, rack_1: %s",
 			turn, s.Game.RackFor(0).String(), s.Game.RackFor(1).String())
 
@@ -2001,8 +2019,7 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rawPlayer := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("player")))
-	playerIdx := 0
+	// Determine which player to generate moves for
 	switch rawPlayer {
 	case "1", "bot":
 		playerIdx = 1
@@ -2010,6 +2027,11 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request) {
 		playerIdx = int(ng.PlayerOnTurn())
 		if playerIdx < 0 || playerIdx > 1 {
 			playerIdx = 0
+		}
+	default:
+		// For historical turns with no explicit player, use the player from the event
+		if historicalPlayerIdx >= 0 {
+			playerIdx = historicalPlayerIdx
 		}
 	}
 
