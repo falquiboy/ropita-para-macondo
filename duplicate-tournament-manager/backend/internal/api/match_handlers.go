@@ -255,6 +255,11 @@ func (m *MatchHandlers) Play(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	// Always assign a fresh full rack to the next player
+	nextPlayer := s.Game.PlayerOnTurn()
+	if _, err := s.Game.SetRandomRack(nextPlayer, nil); err != nil {
+		log.Printf("[Play] Warning: could not set random rack for player %d: %v", nextPlayer, err)
+	}
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
 
@@ -318,6 +323,11 @@ func (m *MatchHandlers) AcceptLivePlay(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	// Always assign a fresh full rack to the next player
+	nextPlayer := s.Game.PlayerOnTurn()
+	if _, err := s.Game.SetRandomRack(nextPlayer, nil); err != nil {
+		log.Printf("[AcceptLivePlay] Warning: could not set random rack for player %d: %v", nextPlayer, err)
+	}
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
 
@@ -341,6 +351,11 @@ func (m *MatchHandlers) Exchange(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	// Always assign a fresh full rack to the next player
+	nextPlayer := s.Game.PlayerOnTurn()
+	if _, err := s.Game.SetRandomRack(nextPlayer, nil); err != nil {
+		log.Printf("[Exchange] Warning: could not set random rack for player %d: %v", nextPlayer, err)
+	}
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
 
@@ -356,6 +371,11 @@ func (m *MatchHandlers) Pass(w http.ResponseWriter, r *http.Request) {
 	if err := s.Pass(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
+	}
+	// Always assign a fresh full rack to the next player
+	nextPlayer := s.Game.PlayerOnTurn()
+	if _, err := s.Game.SetRandomRack(nextPlayer, nil); err != nil {
+		log.Printf("[Pass] Warning: could not set random rack for player %d: %v", nextPlayer, err)
 	}
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
@@ -1256,6 +1276,12 @@ func (m *MatchHandlers) ApplyManual(w http.ResponseWriter, r *http.Request) {
 	}
 	// Track rack definitivo para el turno (para unseen histórico)
 	s.AppendPlyRack(placedRack)
+	// Always assign a fresh full rack to the next player from the bag
+	// This simplifies input libre mode where the leave is unknown
+	nextPlayer := s.Game.PlayerOnTurn()
+	if _, err := s.Game.SetRandomRack(nextPlayer, nil); err != nil {
+		log.Printf("[ApplyManual] Warning: could not set random rack for player %d: %v", nextPlayer, err)
+	}
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
 
@@ -2087,6 +2113,22 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request) {
 		return Move{Type: typ, Word: word, Row: r, Col: c, Dir: dir, Score: pm.Score(), Leave: pm.LeaveString(), LeaveVal: lv, Equity: eq}
 	}
 	if mode == "sim" {
+		// Sort plays by equity desc before selecting topK candidates
+		// This ensures exchanges with high equity are included in simulation
+		moveEquity := func(pm *move.Move) float64 {
+			if pm == nil {
+				return -1e18
+			}
+			if eq := pm.Equity(); eq != 0 {
+				return eq
+			}
+			lv := 0.0
+			if csc != nil {
+				lv = csc.LeaveValue(pm.Leave())
+			}
+			return float64(pm.Score()) + lv
+		}
+		sort.SliceStable(plays, func(i, j int) bool { return moveEquity(plays[i]) > moveEquity(plays[j]) })
 		if topk > len(plays) {
 			topk = len(plays)
 		}
