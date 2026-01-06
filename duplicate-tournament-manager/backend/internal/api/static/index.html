@@ -389,6 +389,7 @@
       // small typing buffer to allow merging CH/LL/RR
       let pendingKey = null; // a single uppercase letter waiting to possibly merge
       let pendingKeyTimer = null;
+      let pendingKeyIsBlank = false; // true if pending key should become a blank (comodín)
       let isAnalysis = false; // analysis mode flag: free placement and manual submit
       let matchBonusRows = null; // 15 strings from server with bonus codes
       let draggingKind = null; // 'rack' | 'board' | null
@@ -1128,11 +1129,16 @@ async function refreshUnseen(){
       }
       function sanitizeToken(tk){
         if (!tk || typeof tk !== 'string') return '';
-        // Remove any pipe characters or other invalid chars that might contaminate tokens
-        let clean = tk.replace(/[|]/g, '');
-        // If it becomes empty or invalid, return empty string
-        if (!clean) return '';
-        return clean;
+        // Valid tokens: bracket digraphs [CH], [LL], [RR] (upper or lower)
+        if (/^\[(CH|LL|RR|ch|ll|rr)\]$/.test(tk)) return tk;
+        // Valid single chars: A-Z except K/W, Ñ, a-z except k/w, ñ, and ?
+        if (tk === '?' || tk === 'Ñ' || tk === 'ñ') return tk;
+        if (tk.length === 1) {
+          const up = tk.toUpperCase();
+          if (up >= 'A' && up <= 'Z' && up !== 'K' && up !== 'W') return tk;
+        }
+        // Otherwise invalid - return empty to filter out
+        return '';
       }
       function rebuildRackCounts(){
         // Sanitize rack tokens during rebuild to remove any contamination
@@ -1223,9 +1229,12 @@ async function refreshUnseen(){
       function placedTokenForBlankAssignment(assign){
         if (!assign) return null;
         const up = assign.toUpperCase().trim();
+        // Allow digraphs CH, LL, RR
         if (up === 'CH' || up === 'LL' || up === 'RR') return `[${up.toLowerCase()}]`;
         if (up.length === 1){
           if (up === 'Ñ') return 'ñ';
+          // Exclude K and W (not in Spanish Scrabble) and non-alphabetic
+          if (up === 'K' || up === 'W') return null;
           if (up >= 'A' && up <= 'Z') return up.toLowerCase();
         }
         return null;
@@ -1238,7 +1247,7 @@ async function refreshUnseen(){
         let tk = rackTokensArr[rackIdx];
         let placeTk = tk;
         if (tk === '?'){
-          const a = prompt('Asigna letra al comodín (A–Z, Ñ, CH, LL, RR):', 'A');
+          const a = prompt('Asigna letra al comodín (A–Z excepto K/W, Ñ, CH, LL, RR):', 'A');
           const mapped = placedTokenForBlankAssignment(a||'');
           if (!mapped) return; // cancel invalid
           placeTk = mapped;
@@ -1317,7 +1326,7 @@ async function refreshUnseen(){
         if (freeInputActive) {
           let placeTk = token;
           if (token === '?') {
-            const a = prompt('Asigna letra al comodín (A–Z, Ñ, CH, LL, RR):', 'A');
+            const a = prompt('Asigna letra al comodín (A–Z excepto K/W, Ñ, CH, LL, RR):', 'A');
             const mapped = placedTokenForBlankAssignment(a||'');
             if (!mapped) { return; }
             placeTk = mapped;
@@ -1341,8 +1350,11 @@ async function refreshUnseen(){
       }
       function flushPendingKey(){
         if (!pendingKey) return;
-        tryPlaceToken(pendingKey);
+        // Si es comodín pendiente, colocar en minúscula
+        const token = pendingKeyIsBlank ? pendingKey.toLowerCase() : pendingKey;
+        tryPlaceToken(token);
         pendingKey = null;
+        pendingKeyIsBlank = false;
         if (pendingKeyTimer){ clearTimeout(pendingKeyTimer); pendingKeyTimer=null; }
       }
       document.addEventListener('keydown', (e)=>{
@@ -1383,15 +1395,28 @@ async function refreshUnseen(){
         if(k === 'Enter'){ /* handled elsewhere to submit */ return; }
         if(k === 'Backspace'){ recallLast(); e.preventDefault(); return; }
         if(k.length===1){
-          // Shift + letra -> SIEMPRE coloca comodín representando esa letra (minúscula)
-          // Esta acción es universal e inambigua, no depende del modo
+          // Shift + letra -> coloca comodín representando esa letra (minúscula)
+          // Para C, L, R: buffear para permitir dígrafos (CH, LL, RR) con escritura natural
+          // Excluir K y W (no existen en Scrabble español)
           if (e.shiftKey && /[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]/.test(k)){
+            const up = k.toUpperCase();
+            if (up === 'K' || up === 'W') { e.preventDefault(); return; } // No válido en español
+            // C, L, R pueden iniciar dígrafo - buffear y esperar
+            if (up === 'C' || up === 'L' || up === 'R') {
+              flushPendingKey();
+              pendingKey = up;
+              pendingKeyIsBlank = true; // marcar como comodín pendiente
+              if (pendingKeyTimer){ clearTimeout(pendingKeyTimer); }
+              pendingKeyTimer = setTimeout(()=>{ flushPendingKey(); }, 450);
+              e.preventDefault(); return;
+            }
+            // Otras letras: colocar inmediatamente
             const low = k.toLowerCase();
             flushPendingKey(); tryPlaceToken(low); e.preventDefault(); return;
           }
           // '?' abre diálogo para asignar letra al comodín
           if (k === '?'){
-            const a = prompt('Asigna letra al comodín (A–Z, Ñ, CH, LL, RR):', 'A');
+            const a = prompt('Asigna letra al comodín (A–Z excepto K/W, Ñ, CH, LL, RR):', 'A');
             const mapped = placedTokenForBlankAssignment(a||'');
             if (mapped){ flushPendingKey(); tryPlaceToken(mapped); }
             e.preventDefault(); return;
@@ -1411,9 +1436,11 @@ async function refreshUnseen(){
           const mergeIfPossible = () => {
             if (!pendingKey) return false;
             const pair = (pendingKey + ch).toUpperCase();
-            if (pair === 'CH' && (analysisLike || rackHas('[CH]'))){ tryPlaceToken(analysisLike && e.shiftKey ? '[ch]' : '[CH]'); pendingKey=null; return true; }
-            if (pair === 'LL' && (analysisLike || rackHas('[LL]'))){ tryPlaceToken(analysisLike && e.shiftKey ? '[ll]' : '[LL]'); pendingKey=null; return true; }
-            if (pair === 'RR' && (analysisLike || rackHas('[RR]'))){ tryPlaceToken(analysisLike && e.shiftKey ? '[rr]' : '[RR]'); pendingKey=null; return true; }
+            // Si pendingKeyIsBlank es true, crear dígrafo comodín
+            const useBlank = pendingKeyIsBlank || (analysisLike && e.shiftKey);
+            if (pair === 'CH' && (useBlank || analysisLike || rackHas('[CH]'))){ tryPlaceToken(useBlank ? '[ch]' : '[CH]'); pendingKey=null; pendingKeyIsBlank=false; return true; }
+            if (pair === 'LL' && (useBlank || analysisLike || rackHas('[LL]'))){ tryPlaceToken(useBlank ? '[ll]' : '[LL]'); pendingKey=null; pendingKeyIsBlank=false; return true; }
+            if (pair === 'RR' && (useBlank || analysisLike || rackHas('[RR]'))){ tryPlaceToken(useBlank ? '[rr]' : '[RR]'); pendingKey=null; pendingKeyIsBlank=false; return true; }
             return false;
           };
           if (mergeIfPossible()){
@@ -1427,6 +1454,7 @@ async function refreshUnseen(){
           }
           // buffer current key; will auto-flush shortly if not merged
           pendingKey = ch;
+          pendingKeyIsBlank = false; // tecla normal, no comodín
           if (pendingKeyTimer){ clearTimeout(pendingKeyTimer); }
           // Only delay for C, L, R (potential digraphs CH, LL, RR); place other letters immediately
           if (ch === 'C' || ch === 'L' || ch === 'R'){

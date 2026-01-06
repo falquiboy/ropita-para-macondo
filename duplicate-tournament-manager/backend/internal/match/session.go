@@ -510,7 +510,9 @@ func (s *Session) PlayHuman(word string, c Coords) (*move.Move, error) {
 		log.Printf("total candidates: %d", len(plays))
 	}
 	targetDir := strings.ToUpper(c.Dir)
-	// First, try exact match on word and coordinates in generated plays
+	// First pass: try EXACT match preserving blank positions (lowercase = blank)
+	// This ensures we pick the right move when multiple plays differ only in blank placement
+	normalizedWord := normalizeTilesForExactMatch(word)
 	for _, pm := range plays {
 		if pm.Action() != move.MoveTypePlay {
 			continue
@@ -521,7 +523,29 @@ func (s *Session) PlayHuman(word string, c Coords) (*move.Move, error) {
 			dir = "V"
 		}
 		if r == c.Row && col == c.Col && dir == targetDir {
-			// TilesString includes anchors; compare word ignoring '.'
+			tiles := strings.ReplaceAll(pm.TilesString(), ".", "")
+			if normalizeTilesForExactMatch(tiles) == normalizedWord {
+				player := int(s.Game.PlayerOnTurn())
+				if err := s.Game.PlayMove(pm, true, 0); err != nil {
+					return nil, err
+				}
+				s.recordPlayEvent(player, pm)
+				s.maybeAutoChallenge()
+				return pm, nil
+			}
+		}
+	}
+	// Second pass: fall back to case-insensitive match (for legacy compatibility)
+	for _, pm := range plays {
+		if pm.Action() != move.MoveTypePlay {
+			continue
+		}
+		r, col, v := pm.CoordsAndVertical()
+		dir := "H"
+		if v {
+			dir = "V"
+		}
+		if r == c.Row && col == c.Col && dir == targetDir {
 			tiles := strings.ReplaceAll(pm.TilesString(), ".", "")
 			if equalWord(tiles, word) {
 				player := int(s.Game.PlayerOnTurn())
@@ -590,7 +614,9 @@ func (s *Session) validateSingleMove(word string, c Coords) (*move.Move, error) 
 	// Search exhaustively for exact match
 	targetDir := strings.ToUpper(c.Dir)
 	var candidatesAtCoords []*move.Move
+	normalizedWord := normalizeTilesForExactMatch(word)
 
+	// First pass: exact match preserving blank positions
 	for _, pm := range allPlays {
 		if pm.Action() != move.MoveTypePlay {
 			continue
@@ -604,12 +630,22 @@ func (s *Session) validateSingleMove(word string, c Coords) (*move.Move, error) 
 			tiles := strings.ReplaceAll(pm.TilesString(), ".", "")
 			candidatesAtCoords = append(candidatesAtCoords, pm)
 
-			if equalWord(tiles, word) {
+			if normalizeTilesForExactMatch(tiles) == normalizedWord {
 				if os.Getenv("DEBUG_MATCH") == "1" {
-					log.Printf("validateSingleMove: found exact match in exhaustive search")
+					log.Printf("validateSingleMove: found exact match (preserving blanks)")
 				}
 				return pm, nil
 			}
+		}
+	}
+	// Second pass: case-insensitive fallback
+	for _, pm := range candidatesAtCoords {
+		tiles := strings.ReplaceAll(pm.TilesString(), ".", "")
+		if equalWord(tiles, word) {
+			if os.Getenv("DEBUG_MATCH") == "1" {
+				log.Printf("validateSingleMove: found match via case-insensitive fallback")
+			}
+			return pm, nil
 		}
 	}
 
@@ -629,6 +665,63 @@ func (s *Session) validateSingleMove(word string, c Coords) (*move.Move, error) 
 // equalWord compares move tile strings but normalizes Spanish digraphs and brackets.
 // Treats [CH]/Ç equivalent to CH, [LL]/K to LL, [RR]/W to RR; ignores case.
 func equalWord(a, b string) bool { return canon(a) == canon(b) }
+
+// normalizeTilesForExactMatch normalizes bracket notation but PRESERVES case.
+// This allows distinguishing between blank positions (lowercase) and regular tiles (uppercase).
+// Example: "[a]BC" -> "aBC", "[CH]a" -> "CHa"
+func normalizeTilesForExactMatch(s string) string {
+	if s == "" {
+		return s
+	}
+	s = strings.ReplaceAll(s, ".", "")
+	var out strings.Builder
+	rs := []rune(s)
+	for i := 0; i < len(rs); i++ {
+		r := rs[i]
+		if r == '[' {
+			j := i + 1
+			for j < len(rs) && rs[j] != ']' {
+				j++
+			}
+			if j < len(rs) {
+				inner := string(rs[i+1 : j])
+				// Check if it's a digraph (preserve case)
+				up := strings.ToUpper(inner)
+				if up == "CH" || up == "LL" || up == "RR" {
+					// Digraph: if lowercase inner, it's a blank digraph
+					if inner == strings.ToLower(inner) {
+						out.WriteString(strings.ToLower(up))
+					} else {
+						out.WriteString(up)
+					}
+				} else {
+					// Single letter in brackets - preserve case (lowercase = blank)
+					out.WriteString(inner)
+				}
+				i = j
+				continue
+			}
+		}
+		// Map FISE digraph symbols preserving blank status
+		switch r {
+		case 'Ç':
+			out.WriteString("CH")
+		case 'ç':
+			out.WriteString("ch") // lowercase = blank CH
+		case 'K':
+			out.WriteString("LL")
+		case 'k':
+			out.WriteString("ll") // lowercase = blank LL
+		case 'W':
+			out.WriteString("RR")
+		case 'w':
+			out.WriteString("rr") // lowercase = blank RR
+		default:
+			out.WriteRune(r) // preserve case
+		}
+	}
+	return out.String()
+}
 
 func canon(s string) string {
 	if s == "" {

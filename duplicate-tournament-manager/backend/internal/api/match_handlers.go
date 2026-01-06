@@ -255,10 +255,14 @@ func (m *MatchHandlers) Play(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	// Always assign a fresh full rack to the next player
-	nextPlayer := s.Game.PlayerOnTurn()
-	if _, err := s.Game.SetRandomRack(nextPlayer, nil); err != nil {
-		log.Printf("[Play] Warning: could not set random rack for player %d: %v", nextPlayer, err)
+	// In FreeInput mode, assign a fresh full rack to the next player
+	// (since we don't know the actual leave in this mode)
+	// In normal mode, Macondo's PlayMove already handles rack replenishment correctly
+	if in.FreeInput {
+		nextPlayer := s.Game.PlayerOnTurn()
+		if _, err := s.Game.SetRandomRack(nextPlayer, nil); err != nil {
+			log.Printf("[Play] Warning: could not set random rack for player %d: %v", nextPlayer, err)
+		}
 	}
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
@@ -323,10 +327,12 @@ func (m *MatchHandlers) AcceptLivePlay(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	// Always assign a fresh full rack to the next player
-	nextPlayer := s.Game.PlayerOnTurn()
-	if _, err := s.Game.SetRandomRack(nextPlayer, nil); err != nil {
-		log.Printf("[AcceptLivePlay] Warning: could not set random rack for player %d: %v", nextPlayer, err)
+	// In FreeInput mode, assign a fresh full rack to the next player
+	if in.FreeInput {
+		nextPlayer := s.Game.PlayerOnTurn()
+		if _, err := s.Game.SetRandomRack(nextPlayer, nil); err != nil {
+			log.Printf("[AcceptLivePlay] Warning: could not set random rack for player %d: %v", nextPlayer, err)
+		}
 	}
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
@@ -351,11 +357,7 @@ func (m *MatchHandlers) Exchange(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	// Always assign a fresh full rack to the next player
-	nextPlayer := s.Game.PlayerOnTurn()
-	if _, err := s.Game.SetRandomRack(nextPlayer, nil); err != nil {
-		log.Printf("[Exchange] Warning: could not set random rack for player %d: %v", nextPlayer, err)
-	}
+	// Macondo's Exchange already handles rack management correctly
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
 
@@ -372,11 +374,7 @@ func (m *MatchHandlers) Pass(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	// Always assign a fresh full rack to the next player
-	nextPlayer := s.Game.PlayerOnTurn()
-	if _, err := s.Game.SetRandomRack(nextPlayer, nil); err != nil {
-		log.Printf("[Pass] Warning: could not set random rack for player %d: %v", nextPlayer, err)
-	}
+	// Pass doesn't change racks - player keeps their tiles
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
 
@@ -1997,49 +1995,44 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request) {
 		turn = 0
 	}
 
-	ng, err := game.NewFromHistory(hist, rules, 0)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-	if err := ng.PlayToTurn(turn); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
-
 	// Determine player index - for historical turns, default to the player from the event
 	rawPlayer := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("player")))
 	playerIdx := 0
 	historicalPlayerIdx := -1 // Will be set for historical turns
 
-	// For historical turns, use the rack from the event (the rack BEFORE playing that turn)
-	// For current/latest turn, use the manually-set racks from s.Game
-	if turn < maxTurn && turn < len(hist.Events) {
-		evt := hist.Events[turn]
-		historicalRack := evt.GetRack()
-		historicalPlayerIdx = int(evt.GetPlayerIndex())
-		log.Printf("[MovesAt] Historical turn %d: using rack from event: %s (player %d)",
-			turn, historicalRack, historicalPlayerIdx)
-		rack := tilemapping.RackFromString(historicalRack, s.LD.TileMapping())
-		if rack != nil {
-			ng.SetPlayerOnTurn(historicalPlayerIdx)
-			if err := ng.SetRackForOnly(historicalPlayerIdx, rack); err != nil {
-				log.Printf("[MovesAt] Unable to set historical rack: %v", err)
-			}
+	// For current turn, use Copy() to preserve the actual bag state without modifying s.Game
+	// (important for input libre mode where SetRandomRack modifies the bag)
+	var ng *game.Game
+	if turn == maxTurn {
+		// Copy current game to preserve bag state but not modify the original
+		ng = s.Game.Copy()
+		log.Printf("[MovesAt] At current turn %d, using s.Game.Copy() - rack_0: %s, rack_1: %s, bag: %d",
+			turn, ng.RackFor(0).String(), ng.RackFor(1).String(), ng.Bag().TilesRemaining())
+	} else {
+		// Historical turn - reconstruct from history
+		var err error
+		ng, err = game.NewFromHistory(hist, rules, 0)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
 		}
-	} else if turn == maxTurn {
-		log.Printf("[MovesAt] At current turn %d, copying racks from s.Game - rack_0: %s, rack_1: %s",
-			turn, s.Game.RackFor(0).String(), s.Game.RackFor(1).String())
+		if err := ng.PlayToTurn(turn); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 
-		ng.ThrowRacksIn()
-		for player := 0; player < 2; player++ {
-			rackStr := s.Game.RackFor(player).String()
-			rack := tilemapping.RackFromString(rackStr, s.LD.TileMapping())
+		// For historical turns, use the rack from the event (the rack BEFORE playing that turn)
+		if turn < len(hist.Events) {
+			evt := hist.Events[turn]
+			historicalRack := evt.GetRack()
+			historicalPlayerIdx = int(evt.GetPlayerIndex())
+			log.Printf("[MovesAt] Historical turn %d: using rack from event: %s (player %d)",
+				turn, historicalRack, historicalPlayerIdx)
+			rack := tilemapping.RackFromString(historicalRack, s.LD.TileMapping())
 			if rack != nil {
-				if err := ng.SetRackForOnly(player, rack); err != nil {
-					log.Printf("[MovesAt] Unable to set rack for player %d: %v", player, err)
-				} else {
-					log.Printf("[MovesAt] Successfully set rack for player %d: %s", player, ng.RackFor(player).String())
+				ng.SetPlayerOnTurn(historicalPlayerIdx)
+				if err := ng.SetRackForOnly(historicalPlayerIdx, rack); err != nil {
+					log.Printf("[MovesAt] Unable to set historical rack: %v", err)
 				}
 			}
 		}
