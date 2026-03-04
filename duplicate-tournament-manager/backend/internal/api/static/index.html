@@ -2746,6 +2746,8 @@ async function refreshUnseenAtTurn(n){
         const r = await fetch(`/matches/${matchId}/ai_move`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
         const j = await r.json(); if(j.error){ alert(j.error); return; }
         await refreshMatch(); await refreshHistory();
+        // Auto AI: if it's now the bot's turn, auto-respond
+        if (matchOnTurn === 1 && document.getElementById('matchAutoAI')?.checked){ await doAIMove(); }
       }
       // Default threads to optimal count for performance
       (function(){
