@@ -137,6 +137,8 @@ func Router(eng Engine) http.Handler {
 			mh.Play(w, r)
 		case r.Method == http.MethodPost && strings.HasSuffix(p, "/accept"):
 			mh.AcceptLivePlay(w, r)
+		case r.Method == http.MethodPost && strings.HasSuffix(p, "/challenge"):
+			mh.ChallengePhony(w, r)
 		case r.Method == http.MethodPost && strings.HasSuffix(p, "/exchange"):
 			mh.Exchange(w, r)
 		case r.Method == http.MethodPost && strings.HasSuffix(p, "/pass"):

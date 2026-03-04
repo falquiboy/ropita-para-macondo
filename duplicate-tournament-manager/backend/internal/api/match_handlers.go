@@ -27,6 +27,7 @@ import (
 	"github.com/domino14/macondo/montecarlo"
 	"github.com/domino14/macondo/move"
 	"github.com/domino14/word-golib/tilemapping"
+	"google.golang.org/protobuf/proto"
 )
 
 // LogBuffer captures zerolog output and broadcasts to SSE clients
@@ -234,7 +235,12 @@ func (m *MatchHandlers) Play(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	origPlayer := int(s.Game.PlayerOnTurn())
+	// Always capture the full rack BEFORE any modifications, so we can
+	// store it when the rack was manually defined via set_rack.
+	prePlayRack := s.Game.RackFor(origPlayer).String()
 	var oldRack string
+	// Capture the turn index BEFORE the move adds an event to history
+	turnIdx := len(s.Game.History().Events)
 	mv := Move{Word: normalizeWordToBrackets(in.Word), Row: in.Row, Col: in.Col, Dir: strings.ToUpper(in.Dir)}
 	if in.FreeInput {
 		var errPrep error
@@ -246,18 +252,19 @@ func (m *MatchHandlers) Play(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err := s.PlayHuman(in.Word, matchCoords(in.Row, in.Col, in.Dir))
 	if err != nil {
-		// Don't use silent fallback - if PlayHuman fails (e.g., phony/invalid word),
-		// return error so frontend can show confirmation dialog and use /accept endpoint.
-		// This ensures user is warned before placing phonies.
 		if in.FreeInput {
 			revertFreeInput(s, origPlayer, oldRack)
 		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	// In FreeInput mode, assign a fresh full rack to the next player
-	// (since we don't know the actual leave in this mode)
-	// In normal mode, Macondo's PlayMove already handles rack replenishment correctly
+	// Store the full rack when it was explicitly defined by the user
+	// (via set_rack). Works for both free_input and normal play paths:
+	// the user may select a generated move or input directly on the board.
+	if s.ManualRackFlag(origPlayer) {
+		s.SetFullRack(turnIdx, prePlayRack)
+	}
+	s.SetManualRackFlag(origPlayer, false)
 	if in.FreeInput {
 		nextPlayer := s.Game.PlayerOnTurn()
 		if _, err := s.Game.SetRandomRack(nextPlayer, nil); err != nil {
@@ -300,6 +307,9 @@ func (m *MatchHandlers) AcceptLivePlay(w http.ResponseWriter, r *http.Request) {
 	}
 	var oldRack string
 	origPlayer := int(s.Game.PlayerOnTurn())
+	// Always capture the full rack BEFORE any modifications.
+	prePlayRack := s.Game.RackFor(origPlayer).String()
+	turnIdx := len(s.Game.History().Events)
 	if in.FreeInput {
 		var errPrep error
 		oldRack, errPrep = m.prepareFreeInputRack(s, mv, in.Tokens)
@@ -310,6 +320,9 @@ func (m *MatchHandlers) AcceptLivePlay(w http.ResponseWriter, r *http.Request) {
 	}
 	tiles, err := buildTilesForMove(s, mv, in.Tokens)
 	if err != nil {
+		if in.FreeInput {
+			revertFreeInput(s, origPlayer, oldRack)
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -317,6 +330,9 @@ func (m *MatchHandlers) AcceptLivePlay(w http.ResponseWriter, r *http.Request) {
 	rack := s.Game.RackFor(s.Game.PlayerOnTurn()).String()
 	play, err := s.Game.CreateAndScorePlacementMove(coords, tiles, rack, false)
 	if err != nil {
+		if in.FreeInput {
+			revertFreeInput(s, origPlayer, oldRack)
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -327,7 +343,13 @@ func (m *MatchHandlers) AcceptLivePlay(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	// In FreeInput mode, assign a fresh full rack to the next player
+	s.RecordPlayEvent(origPlayer, play)
+	// Store the full rack when it was explicitly defined by the user
+	// (via set_rack). Works for both free_input and normal play paths.
+	if s.ManualRackFlag(origPlayer) {
+		s.SetFullRack(turnIdx, prePlayRack)
+	}
+	s.SetManualRackFlag(origPlayer, false)
 	if in.FreeInput {
 		nextPlayer := s.Game.PlayerOnTurn()
 		if _, err := s.Game.SetRandomRack(nextPlayer, nil); err != nil {
@@ -353,11 +375,19 @@ func (m *MatchHandlers) Exchange(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
 		return
 	}
+	// Capture the player and turn index BEFORE the exchange modifies them
+	player := int(s.Game.PlayerOnTurn())
+	preRack := s.Game.RackFor(player).String()
+	turnIdx := len(s.Game.History().Events)
 	if err := s.Exchange(in.Tiles); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	// Macondo's Exchange already handles rack management correctly
+	// Only store the full rack when it was explicitly defined by the user
+	if s.ManualRackFlag(player) {
+		s.SetFullRack(turnIdx, preRack)
+	}
+	s.SetManualRackFlag(player, false)
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
 
@@ -370,11 +400,111 @@ func (m *MatchHandlers) Pass(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
+	// Capture the player and turn index BEFORE the pass adds an event
+	player := int(s.Game.PlayerOnTurn())
+	preRack := s.Game.RackFor(player).String()
+	turnIdx := len(s.Game.History().Events)
 	if err := s.Pass(); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	// Pass doesn't change racks - player keeps their tiles
+	// Only store the full rack when it was explicitly defined by the user
+	if s.ManualRackFlag(player) {
+		s.SetFullRack(turnIdx, preRack)
+	}
+	s.SetManualRackFlag(player, false)
+	writeJSON(w, http.StatusOK, m.serialize(s))
+}
+
+// ChallengePhony handles a phony challenge: force-plays the rejected word
+// onto the board and immediately issues a ChallengeEvent to remove it.
+// This produces the native Macondo TILE_PLACEMENT + PHONY_TILES_RETURNED
+// sequence in the game history and GCG output.
+func (m *MatchHandlers) ChallengePhony(w http.ResponseWriter, r *http.Request) {
+	id := m.pathID(r.URL.Path)
+	m.mu.RLock()
+	s := m.byID[id]
+	m.mu.RUnlock()
+	if s == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	if s.Analysis {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "not available in analysis mode"})
+		return
+	}
+	var in struct {
+		Word        string   `json:"word"`
+		Row         int      `json:"row"`
+		Col         int      `json:"col"`
+		Dir         string   `json:"dir"`
+		Tokens      []string `json:"tokens"`
+		FreeInput   bool     `json:"free_input"`
+		DisplayWord string   `json:"display_word"` // human-readable form for annotation
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
+		return
+	}
+
+	// --- Step 1: Force-play the phony onto the board (same as AcceptLivePlay). ---
+	// Always prepare the rack from the placed tiles so the challenge works
+	// even when the tiles don't match the current rack (free input mode).
+	mv := Move{Word: normalizeWordToBrackets(in.Word), Row: in.Row, Col: in.Col, Dir: strings.ToUpper(in.Dir)}
+	if mv.Dir != "H" && mv.Dir != "V" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid direction"})
+		return
+	}
+	origPlayer := int(s.Game.PlayerOnTurn())
+	prePlayRack := s.Game.RackFor(origPlayer).String()
+	turnIdx := len(s.Game.History().Events)
+	oldRack, errPrep := m.prepareFreeInputRack(s, mv, in.Tokens)
+	if errPrep != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errPrep.Error()})
+		return
+	}
+	tiles, err := buildTilesForMove(s, mv, in.Tokens)
+	if err != nil {
+		revertFreeInput(s, origPlayer, oldRack)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	coords := move.ToBoardGameCoords(mv.Row, mv.Col, mv.Dir == "V")
+	rack := s.Game.RackFor(s.Game.PlayerOnTurn()).String()
+	play, err := s.Game.CreateAndScorePlacementMove(coords, tiles, rack, false)
+	if err != nil {
+		revertFreeInput(s, origPlayer, oldRack)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := s.Game.PlayMove(play, true, 0); err != nil {
+		revertFreeInput(s, origPlayer, oldRack)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	s.RecordPlayEvent(origPlayer, play)
+	if s.ManualRackFlag(origPlayer) {
+		s.SetFullRack(turnIdx, prePlayRack)
+	}
+	s.SetManualRackFlag(origPlayer, false)
+
+	// --- Step 2: Immediately challenge the play we just placed. ---
+	evtIdx, err := s.ChallengeLastPlay()
+	if err != nil {
+		// ChallengeEvent failed; the phony is still on the board.
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Record the challenged word for scoresheet / GCG annotation.
+	displayWord := strings.TrimSpace(in.DisplayWord)
+	if displayWord == "" {
+		displayWord = strings.TrimSpace(in.Word)
+	}
+	if displayWord != "" {
+		s.SetChallengedWord(evtIdx, displayWord)
+	}
+
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
 
@@ -428,6 +558,54 @@ func matchCoords(r, c int, d string) match.Coords {
 	return match.Coords{Row: r, Col: c, Dir: strings.ToUpper(d)}
 }
 
+// spanishEndgameAdj inspects the game history for an END_RACK_PTS event and
+// returns the Spanish-style corrected scores.  Macondo adds 2× the opponent's
+// rack value to the closer; Spanish rules add 1× to the closer and subtract
+// 1× from the opponent.  If no adjustment applies, ok is false.
+//
+// NOTE: We do NOT gate on h.PlayState == GAME_OVER because Macondo's
+// endgame solver can leave PlayState in an inconsistent state (e.g.
+// PLAYING) even after the END_RACK_PTS event has been recorded.  The
+// presence of the event itself is the authoritative signal.
+func spanishEndgameAdj(h *pb.GameHistory) (scores [2]int, rackPts int, closer int, rackStr string, ok bool) {
+	if h == nil {
+		return
+	}
+	for _, ev := range h.GetEvents() {
+		if ev.GetType() == pb.GameEvent_END_RACK_PTS {
+			endPts := int(ev.GetEndRackPoints()) // 2× actual rack value
+			rackPts = endPts / 2
+			closer = int(ev.GetPlayerIndex())
+			opponent := 1 - closer
+			rackStr = ev.GetRack()
+
+			// Macondo state: closer got +2×rackPts, opponent unchanged.
+			// Spanish: closer should get +1×rackPts, opponent −1×rackPts.
+			// So: corrected_closer = macondo_closer − rackPts
+			//     corrected_opp    = macondo_opp    − rackPts
+			if len(h.FinalScores) == 2 {
+				scores[closer] = int(h.FinalScores[closer]) - rackPts
+				scores[opponent] = int(h.FinalScores[opponent]) - rackPts
+			} else {
+				// Fallback: compute from the event's cumulative.
+				// The closer's cumulative already includes +2×rackPts.
+				scores[closer] = int(ev.GetCumulative()) - rackPts
+				// For the opponent, scan backwards for their last cumulative.
+				for i := len(h.GetEvents()) - 1; i >= 0; i-- {
+					prev := h.GetEvents()[i]
+					if int(prev.GetPlayerIndex()) == opponent && prev.GetType() != pb.GameEvent_END_RACK_PTS {
+						scores[opponent] = int(prev.GetCumulative()) - rackPts
+						break
+					}
+				}
+			}
+			ok = true
+			return
+		}
+	}
+	return
+}
+
 func (m *MatchHandlers) serialize(s *match.Session) map[string]any {
 	// minimal snapshot
 	out := map[string]any{
@@ -442,10 +620,27 @@ func (m *MatchHandlers) serialize(s *match.Session) map[string]any {
 	}
 	// expose basic game state/winner if available
 	if h := s.Game.History(); h != nil {
-		out["winner"] = h.Winner
 		out["play_state"] = h.PlayState.String()
-		if len(h.FinalScores) == 2 {
-			out["final_score"] = []int{int(h.FinalScores[0]), int(h.FinalScores[1])}
+
+		// Apply Spanish-style endgame score correction when applicable.
+		if scores, _, _, _, ok := spanishEndgameAdj(h); ok {
+			out["score"] = []int{scores[0], scores[1]}
+			out["final_score"] = []int{scores[0], scores[1]}
+			// Ensure play_state reflects GAME_OVER when endgame calcs
+			// have run, even if Macondo's PlayState is stale.
+			out["play_state"] = pb.PlayState_GAME_OVER.String()
+			if scores[0] > scores[1] {
+				out["winner"] = int32(0)
+			} else if scores[1] > scores[0] {
+				out["winner"] = int32(1)
+			} else {
+				out["winner"] = int32(-1)
+			}
+		} else {
+			out["winner"] = h.Winner
+			if len(h.FinalScores) == 2 {
+				out["final_score"] = []int{int(h.FinalScores[0]), int(h.FinalScores[1])}
+			}
 		}
 	}
 	// board rows: 15 strings, spaces for empty
@@ -590,6 +785,10 @@ func (m *MatchHandlers) SetRack(w http.ResponseWriter, r *http.Request) {
 	// Debug: log after setting rack
 	log.Printf("[SetRack] After setting racks - rack_0: %s, rack_1: %s, bag tiles: %d",
 		s.Game.RackFor(0).String(), s.Game.RackFor(1).String(), s.Game.Bag().TilesRemaining())
+
+	// Mark that this player's rack was explicitly defined by the user,
+	// so Play/Exchange/Pass know to store it as the full rack for that turn.
+	s.SetManualRackFlag(p, true)
 
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
@@ -872,24 +1071,101 @@ func (m *MatchHandlers) ScoreSheet(w http.ResponseWriter, r *http.Request) {
 		Dir    string `json:"dir"`
 		Score  int    `json:"score"`
 		Cum    int    `json:"cum"`
+		Note   string `json:"note,omitempty"`
 	}
 	sr := s.ScoreRows()
-	rows := make([]Row, 0, len(sr))
+	rows := make([]Row, 0, len(sr)+3)
 	// Use sr for Word (has anchor/blank notation), but get PlayedTiles from macondo events
-	evs := s.Game.History().GetEvents()
+	hist := s.Game.History()
+	evs := hist.GetEvents()
+
+	// Track each player's last cumulative (before endgame adjustments).
+	lastCum := [2]int{0, 0}
+
 	for i, e := range sr {
+		// Skip Macondo's native END_RACK_PTS event — we'll replace it with
+		// Spanish-style adjustment rows below.
+		if e.Type == "END_RACK_PTS" {
+			continue
+		}
+
+		// Merge PHONY_TILES_RETURNED with its preceding TILE_PLACEMENT_MOVE:
+		// the user never saw the phony score, so show net zero with a note.
+		if e.Type == "PHONY_TILES_RETURNED" {
+			cw := s.ChallengedWordAt(i)
+			if cw == "" {
+				cw = e.Word
+			}
+			note := "Phony impugnado: " + cw
+			// Replace the preceding TILE_PLACEMENT row (the phony play)
+			// with a single merged row showing score=0.
+			if len(rows) > 0 && rows[len(rows)-1].Type == "TILE_PLACEMENT_MOVE" &&
+				rows[len(rows)-1].Player == e.Player {
+				prev := &rows[len(rows)-1]
+				prev.Type = "PHONY_TILES_RETURNED"
+				prev.Score = 0
+				prev.Cum = e.Cum // restored cumulative (equals pre-play cum)
+				prev.Note = note
+				lastCum[e.Player] = e.Cum
+			} else {
+				// Fallback: standalone row (shouldn't normally happen)
+				rows = append(rows, Row{Ply: e.Ply, Player: e.Player, Type: e.Type,
+					Word: cw, Score: 0, Cum: e.Cum, Note: note})
+				lastCum[e.Player] = e.Cum
+			}
+			continue
+		}
+
 		played := ""
-		// Get PlayedTiles from macondo event if available
 		if i < len(evs) {
 			ev := evs[i]
 			played = ev.GetPlayedTiles()
-			// For exchanges, use the exchanged tiles instead of played tiles
 			if e.Type == "EXCHANGE" {
 				played = ev.GetExchanged()
 			}
 		}
-		rows = append(rows, Row{Ply: e.Ply, Player: e.Player, Type: e.Type, Word: e.Word, Played: played, Row: e.Row, Col: e.Col, Dir: e.Dir, Score: e.Score, Cum: e.Cum})
+		note := ""
+		if e.Type == "PASS" {
+			// Legacy: in case old sessions still have PASS-based challenges.
+			if cw := s.ChallengedWordAt(i); cw != "" {
+				note = "Phony impugnado: " + cw
+			}
+		}
+		rows = append(rows, Row{Ply: e.Ply, Player: e.Player, Type: e.Type, Word: e.Word, Played: played, Row: e.Row, Col: e.Col, Dir: e.Dir, Score: e.Score, Cum: e.Cum, Note: note})
+
+		// Track cumulative per player (only for regular events, not endgame).
+		lastCum[e.Player] = e.Cum
 	}
+
+	// Renumber plys sequentially so the frontend round grouping
+	// (idx = floor((ply-1)/2)) stays correct after PHONY merges.
+	for i := range rows {
+		rows[i].Ply = i + 1
+	}
+
+	// Append Spanish-style endgame adjustment rows if the game is over.
+	if scores, rackPts, closer, rackStr, ok := spanishEndgameAdj(hist); ok {
+		opponent := 1 - closer
+		ply := len(rows) + 1
+		// Opponent row: loses rackPts
+		rows = append(rows, Row{
+			Ply: ply, Player: opponent, Type: "END_RACK_PTS",
+			Word: "-" + rackStr, Score: -rackPts, Cum: lastCum[opponent] - rackPts,
+		})
+		ply++
+		// Closer row: gains rackPts
+		rows = append(rows, Row{
+			Ply: ply, Player: closer, Type: "END_RACK_PTS",
+			Word: "(+" + rackStr + ")", Score: rackPts, Cum: lastCum[closer] + rackPts,
+		})
+		ply++
+		// Final score row
+		rows = append(rows, Row{
+			Ply: ply, Type: "FINAL_SCORE",
+			Note: fmt.Sprintf("Puntaje final: %d – %d", scores[0], scores[1]),
+		})
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{"id": s.ID, "rows": rows})
 }
 
@@ -994,6 +1270,9 @@ func (m *MatchHandlers) prepareFreeInputRack(s *match.Session, mv Move, tokens [
 	}
 	on := int(g.PlayerOnTurn())
 	oldRack := g.RackFor(on).String()
+	// Build rack string from tokens.  Through-tiles (anchors) are marked
+	// with "." in the word (e.g. "V.R" means V placed, through-tile, R placed).
+	// tokenizeRow converts "." to " ", so TrimSpace naturally excludes them.
 	var sb strings.Builder
 	for _, tk := range tokens {
 		tk = strings.TrimSpace(tk)
@@ -1009,12 +1288,7 @@ func (m *MatchHandlers) prepareFreeInputRack(s *match.Session, mv Move, tokens [
 			if inner == strings.ToLower(inner) {
 				sb.WriteString("?")
 			} else {
-				up := strings.ToUpper(inner)
-				if up == "CH" || up == "LL" || up == "RR" {
-					sb.WriteString("[" + up + "]")
-				} else {
-					sb.WriteString("[" + up + "]")
-				}
+				sb.WriteString("[" + strings.ToUpper(inner) + "]")
 			}
 			continue
 		}
@@ -1034,10 +1308,27 @@ func (m *MatchHandlers) prepareFreeInputRack(s *match.Session, mv Move, tokens [
 	if rack == nil {
 		return "", fmt.Errorf("invalid tiles for free input: %s", rackStr)
 	}
-	g.ThrowRacksInFor(on)
+	// Throw ALL racks back into the bag (not just the current player's).
+	// The opponent may hold a randomly-assigned rack that contains tiles the
+	// user wants to place.  Returning everything to the bag avoids false
+	// "tiles not available" errors.
+	opp := 1 - on
+	oppRackStr := g.RackFor(opp).String()
+	g.ThrowRacksIn()
 	if err := g.SetRackForOnly(on, rack); err != nil {
 		restoreRackFromString(s, on, oldRack)
 		return "", err
+	}
+	// Restore the opponent's rack from the remaining bag.
+	if strings.TrimSpace(oppRackStr) != "" {
+		oppRack := tilemapping.RackFromString(oppRackStr, s.LD.TileMapping())
+		if oppRack != nil {
+			if err := g.SetRackForOnly(opp, oppRack); err != nil {
+				// Could not restore exact opponent rack (tiles taken by user).
+				// Assign a fresh random rack instead.
+				g.SetRandomRack(opp, nil)
+			}
+		}
 	}
 	return oldRack, nil
 }
@@ -1088,10 +1379,28 @@ func normalizePlacementToken(token string) string {
 	}
 	if strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]") {
 		inner := t[1 : len(t)-1]
+		up := strings.ToUpper(inner)
+		// For digraphs (CH, LL, RR), preserve bracket notation for Macondo parsing
+		if up == "CH" || up == "LL" || up == "RR" {
+			if inner == strings.ToLower(inner) {
+				// Blank digraph: lowercase inside brackets
+				return "[" + strings.ToLower(up) + "]"
+			}
+			return "[" + up + "]"
+		}
+		// Single letter in brackets: remove brackets, preserve case for blanks
 		if inner == strings.ToLower(inner) {
 			return strings.ToLower(inner)
 		}
 		return strings.ToUpper(inner)
+	}
+	// Naked digraph without brackets (e.g., "CH" from user input)
+	up := strings.ToUpper(t)
+	if up == "CH" || up == "LL" || up == "RR" {
+		if t == strings.ToLower(t) {
+			return "[" + strings.ToLower(up) + "]"
+		}
+		return "[" + up + "]"
 	}
 	if len(t) == 1 && strings.ToLower(t) == t && strings.ToUpper(t) != t {
 		return strings.ToLower(t)
@@ -1238,6 +1547,8 @@ func (m *MatchHandlers) ApplyManual(w http.ResponseWriter, r *http.Request) {
 	// Derive placed tokens for this ply (rack definitivo del turno)
 	mv := Move{Word: normalizeWordToBrackets(in.Word), Row: in.Row, Col: in.Col, Dir: strings.ToUpper(in.Dir)}
 	placedRack := extractPlacedTokens(before, mv)
+	// Capture turn index before the play adds an event
+	turnIdx := len(s.Game.History().Events)
 	// Set Game rack to placed tokens so generator encuentre la jugada exacta
 	pi := s.Game.PlayerOnTurn()
 	s.Game.SetRackForOnly(pi, tilemapping.RackFromString(placedRack, s.LD.TileMapping()))
@@ -1274,6 +1585,18 @@ func (m *MatchHandlers) ApplyManual(w http.ResponseWriter, r *http.Request) {
 	}
 	// Track rack definitivo para el turno (para unseen histórico)
 	s.AppendPlyRack(placedRack)
+	// Track full rack: if the user manually defined a rack and all placed tiles
+	// are consistent with it (subset), preserve the full manual rack.
+	// Otherwise fall back to placed-only tiles.
+	fullRack := placedRack
+	if manualR := strings.TrimSpace(s.ManualRack[in.Player]); manualR != "" {
+		if placedTokensSubsetOf(placedRack, manualR) {
+			fullRack = manualR
+		}
+	}
+	s.SetFullRack(turnIdx, fullRack)
+	// Clear manual rack for this player after applying (consumed by this move)
+	s.ManualRack[in.Player] = ""
 	// Always assign a fresh full rack to the next player from the bag
 	// This simplifies input libre mode where the leave is unknown
 	nextPlayer := s.Game.PlayerOnTurn()
@@ -1326,6 +1649,50 @@ func pick(grid [][]string, r, c int) string {
 	return row[c]
 }
 
+// placedTokensSubsetOf returns true if every token in placedRack can be found
+// (with multiplicity) in manualRack.  Both strings use bracket notation for
+// digraphs, e.g. "[CH]A[LL]E" → tokens ["[CH]","A","[LL]","E"].
+func placedTokensSubsetOf(placedRack, manualRack string) bool {
+	tokenize := func(s string) []string {
+		var out []string
+		rs := []rune(s)
+		for i := 0; i < len(rs); {
+			if rs[i] == '[' {
+				j := i + 1
+				for j < len(rs) && rs[j] != ']' {
+					j++
+				}
+				if j < len(rs) && rs[j] == ']' {
+					out = append(out, string(rs[i:j+1]))
+					i = j + 1
+					continue
+				}
+			}
+			out = append(out, string(rs[i]))
+			i++
+		}
+		return out
+	}
+	// Build frequency map from manual rack tokens
+	avail := make(map[string]int)
+	for _, tk := range tokenize(manualRack) {
+		avail[strings.ToUpper(tk)]++
+	}
+	// Check every placed token is available
+	for _, tk := range tokenize(placedRack) {
+		key := strings.ToUpper(tk)
+		if avail[key] > 0 {
+			avail[key]--
+		} else if avail["?"] > 0 {
+			// blank can represent any tile
+			avail["?"]--
+		} else {
+			return false
+		}
+	}
+	return true
+}
+
 // Undo last manual action in analysis mode.
 func (m *MatchHandlers) Undo(w http.ResponseWriter, r *http.Request) {
 	id := m.pathID(r.URL.Path)
@@ -1347,13 +1714,11 @@ func (m *MatchHandlers) Undo(w http.ResponseWriter, r *http.Request) {
 		target = 0
 	}
 	_ = s.RebuildToTurn(target)
-	// Put the placed rack as the current player's rack for immediate analysis
-	if lp := s.ManualPlyRacks(); len(lp) > 0 && target < len(lp) {
-		lastPlaced := lp[target]
-		if strings.TrimSpace(lastPlaced) != "" {
-			on := s.Game.PlayerOnTurn()
-			s.Game.SetRackForOnly(on, tilemapping.RackFromString(lastPlaced, s.LD.TileMapping()))
-		}
+	// Restore the full rack (manual or placed-only) for this ply so the user
+	// can generate/simulate with the complete rack they originally had.
+	if rk := s.FullRackAt(target); rk != "" {
+		on := s.Game.PlayerOnTurn()
+		s.Game.SetRackForOnly(on, tilemapping.RackFromString(rk, s.LD.TileMapping()))
 	}
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
@@ -1379,6 +1744,11 @@ func (m *MatchHandlers) Redo(w http.ResponseWriter, r *http.Request) {
 		target = len(hist.Events)
 	}
 	_ = s.RebuildToTurn(target)
+	// Restore the full rack for this ply (same logic as Undo)
+	if rk := s.FullRackAt(target); rk != "" {
+		on := s.Game.PlayerOnTurn()
+		s.Game.SetRackForOnly(on, tilemapping.RackFromString(rk, s.LD.TileMapping()))
+	}
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
 
@@ -1397,12 +1767,10 @@ func (m *MatchHandlers) UndoAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.RebuildToTurn(0)
-	if lp := s.ManualPlyRacks(); len(lp) > 0 {
-		firstPlaced := lp[0]
-		if strings.TrimSpace(firstPlaced) != "" {
-			on := s.Game.PlayerOnTurn()
-			s.Game.SetRackForOnly(on, tilemapping.RackFromString(firstPlaced, s.LD.TileMapping()))
-		}
+	// Restore the full rack for turn 0
+	if rk := s.FullRackAt(0); rk != "" {
+		on := s.Game.PlayerOnTurn()
+		s.Game.SetRackForOnly(on, tilemapping.RackFromString(rk, s.LD.TileMapping()))
 	}
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
@@ -1422,7 +1790,13 @@ func (m *MatchHandlers) RedoAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hist := s.Game.History()
-	_ = s.RebuildToTurn(len(hist.Events))
+	lastTurn := len(hist.Events)
+	_ = s.RebuildToTurn(lastTurn)
+	// Restore the full rack for the last turn
+	if rk := s.FullRackAt(lastTurn); rk != "" {
+		on := s.Game.PlayerOnTurn()
+		s.Game.SetRackForOnly(on, tilemapping.RackFromString(rk, s.LD.TileMapping()))
+	}
 	writeJSON(w, http.StatusOK, m.serialize(s))
 }
 
@@ -1744,6 +2118,8 @@ func displayWordWithAnchors(beforeRows, afterRows []string, mv Move) string {
 
 // GCG exports the current match history using Macondo's native GCG format.
 // This ensures full compatibility with Macondo CLI for analysis and comparison.
+// When full manual racks are stored (from free_input / analysis mode), the
+// exported GCG includes the complete rack for each turn, not just placed tiles.
 func (m *MatchHandlers) GCG(w http.ResponseWriter, r *http.Request) {
 	id := m.pathID(r.URL.Path)
 	m.mu.RLock()
@@ -1754,12 +2130,29 @@ func (m *MatchHandlers) GCG(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Clone the history so we can override rack fields with the full manual
+	// racks without mutating the live game state.
+	hist := proto.Clone(s.Game.History()).(*pb.GameHistory)
+	for i, evt := range hist.Events {
+		if rk := s.FullRackAt(i); rk != "" {
+			// The full rack is only stored when the user explicitly
+			// defined it via set_rack (ManualRackFlag).  Trust it
+			// unconditionally — token-representation mismatches
+			// (e.g. individual "C" vs digraph "[CH]") must not
+			// block the override.
+			evt.Rack = rk
+		}
+	}
+
 	// Use Macondo's native GCG export function for full compatibility
-	gcgContent, err := gcgio.GameHistoryToGCG(s.Game.History(), true)
+	gcgContent, err := gcgio.GameHistoryToGCG(hist, true)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("Failed to generate GCG: %v", err)})
 		return
 	}
+
+	// Annotate challenge-penalty passes and Spanish endgame adjustments.
+	gcgContent = m.annotateGCG(gcgContent, s)
 
 	// Set appropriate headers for file download
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -1767,6 +2160,77 @@ func (m *MatchHandlers) GCG(w http.ResponseWriter, r *http.Request) {
 
 	// Write the GCG content
 	_, _ = w.Write([]byte(gcgContent))
+}
+
+// annotateGCG inserts GCG comment lines for challenge-penalty passes and
+// Spanish-style endgame adjustments.  Move lines start with '>'.
+//
+// Challenge annotations use an event-index counter that tracks 1:1 with
+// '>' lines.  Endgame annotations are handled separately because Macondo's
+// GCG exporter may omit the final pass event, shifting indices.  Instead
+// we detect the END_RACK_PTS GCG line by its distinctive "(TILES)" format
+// and insert the annotation right before it.
+func (m *MatchHandlers) annotateGCG(gcg string, s *match.Session) string {
+	lines := strings.Split(gcg, "\n")
+	hist := s.Game.History()
+	evs := hist.GetEvents()
+
+	// Pre-compute Spanish endgame info (if applicable).
+	_, rackPts, closer, rackStr, hasEndgame := spanishEndgameAdj(hist)
+	var endNames [2]string
+	if hasEndgame && len(hist.Players) == 2 {
+		endNames[0] = hist.Players[0].GetNickname()
+		endNames[1] = hist.Players[1].GetNickname()
+	} else {
+		endNames = [2]string{"Jugador0", "Jugador1"}
+	}
+
+	var out []string
+	evtIdx := 0
+	for _, line := range lines {
+		if strings.HasPrefix(line, ">") {
+			// Challenge annotation (uses sequential event-index counter).
+			if cw := s.ChallengedWordAt(evtIdx); cw != "" {
+				out = append(out, "#note Phony impugnado: "+cw)
+			}
+
+			// Spanish endgame annotation: detect the END_RACK_PTS GCG line
+			// by its "(TILES) +pts" pattern rather than by event index,
+			// because Macondo's GCG export omits the final pass and the
+			// index would be off by one.
+			if hasEndgame && isEndRackGCGLine(line) {
+				opponent := 1 - closer
+				out = append(out, fmt.Sprintf("#note Cierre español: %s tiene atril [%s] (valor %d)", endNames[opponent], rackStr, rackPts))
+				out = append(out, fmt.Sprintf("#note %s: -%d (fichas restantes)", endNames[opponent], rackPts))
+				out = append(out, fmt.Sprintf("#note %s: +%d (cierra partida)", endNames[closer], rackPts))
+			}
+
+			// Only advance evtIdx for non-END_RACK_PTS lines, since
+			// challenge annotations need 1:1 with played events.
+			if !isEndRackGCGLine(line) {
+				evtIdx++
+			}
+		}
+		out = append(out, line)
+	}
+	_ = evs // used indirectly via spanishEndgameAdj
+	return strings.Join(out, "\n")
+}
+
+// isEndRackGCGLine returns true if the GCG line looks like an END_RACK_PTS
+// event, e.g. ">Player: (TILES) +pts total".  The key marker is that the
+// "word" field is enclosed in parentheses and there is no board coordinate.
+func isEndRackGCGLine(line string) bool {
+	// Format: ">Nick: (TILES) +pts cum"
+	// After ">Nick: " the next non-space token starts with '('
+	idx := strings.Index(line, ": ")
+	if idx < 0 {
+		return false
+	}
+	rest := strings.TrimSpace(line[idx+2:])
+	// Skip optional rack field (uppercase letters before the coordinate)
+	// The END_RACK_PTS line has format "(TILES) +N M" — starts with '('
+	return len(rest) > 0 && rest[0] == '('
 }
 
 // LoadGCG creates a new analysis match from a GCG file.
@@ -1926,15 +2390,34 @@ func (m *MatchHandlers) Position(w http.ResponseWriter, r *http.Request) {
 		}
 		rows[rr] = sb.String()
 	}
+	// Override the rack with the full rack (manual or placed-only) when available,
+	// so that navigating to a past turn shows the complete rack the player had.
+	// This applies to both Analysis mode and Sim + Input libre mode.
+	// However, only override when the event rack (placed tiles) is consistent
+	// with the full rack.  If the player used free input with tiles that don't
+	// match the assigned rack, keep the event rack (what was actually played).
+	rackCur := ng.RackFor(ng.PlayerOnTurn()).String()
+	rackYou := ng.RackFor(0).String()
+	rackBot := ng.RackFor(1).String()
+	if rk := s.FullRackAt(turn); rk != "" {
+		// Trust the user-defined rack unconditionally.
+		rackCur = rk
+		onTurn := int(ng.PlayerOnTurn())
+		if onTurn == 0 {
+			rackYou = rk
+		} else {
+			rackBot = rk
+		}
+	}
 	out := map[string]any{
 		"id":         s.ID,
 		"turn":       turn,
 		"events":     len(hist.Events),
 		"onturn":     ng.PlayerOnTurn(),
 		"board_rows": rows,
-		"rack":       ng.RackFor(ng.PlayerOnTurn()).String(),
-		"rack_you":   ng.RackFor(0).String(),
-		"rack_bot":   ng.RackFor(1).String(),
+		"rack":       rackCur,
+		"rack_you":   rackYou,
+		"rack_bot":   rackBot,
 		"bag":        ng.Bag().TilesRemaining(),
 		"ruleset":    s.Ruleset,
 		"lexicon":    s.Lexicon,
@@ -2021,16 +2504,33 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// For historical turns, use the rack from the event (the rack BEFORE playing that turn)
+		// For historical turns, use the full rack if we stored one (e.g., from
+		// a manually-defined rack in free_input / analysis mode); otherwise
+		// fall back to the rack recorded in the Macondo event.
+		// Only override when the event rack (placed tiles) is consistent with
+		// the full rack.  If the player used free input with tiles that don't
+		// match the assigned rack, keep the event rack (what was actually played).
 		if turn < len(hist.Events) {
 			evt := hist.Events[turn]
 			historicalRack := evt.GetRack()
 			historicalPlayerIdx = int(evt.GetPlayerIndex())
-			log.Printf("[MovesAt] Historical turn %d: using rack from event: %s (player %d)",
+			if rk := s.FullRackAt(turn); rk != "" {
+				if historicalRack == "" || placedTokensSubsetOf(historicalRack, rk) {
+					historicalRack = rk
+				}
+			}
+			log.Printf("[MovesAt] Historical turn %d: using rack: %s (player %d)",
 				turn, historicalRack, historicalPlayerIdx)
 			rack := tilemapping.RackFromString(historicalRack, s.LD.TileMapping())
 			if rack != nil {
 				ng.SetPlayerOnTurn(historicalPlayerIdx)
+				// Throw all racks back into the bag first so tiles are available.
+				// After PlayToTurn, the rack may only contain the placed tiles
+				// (what Macondo recorded), but the full manual rack may include
+				// additional tiles that are still distributed in the bag.
+				// ThrowRacksIn returns both players' racks to the bag, making
+				// all tiles available for SetRackForOnly.
+				ng.ThrowRacksIn()
 				if err := ng.SetRackForOnly(historicalPlayerIdx, rack); err != nil {
 					log.Printf("[MovesAt] Unable to set historical rack: %v", err)
 				}
@@ -2066,7 +2566,9 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request) {
 		rack.String(), playerIdx, turn, ng.Bag().TilesRemaining())
 	log.Printf("[MovesAt] Current game state - rack_0: %s, rack_1: %s",
 		ng.RackFor(0).String(), ng.RackFor(1).String())
-	exchAllowed := ng.Bag().TilesRemaining() >= 1
+	bagTiles := ng.Bag().TilesRemaining()
+	exchAllowed := bagTiles >= ng.ExchangeLimit()
+	mg.SetMaxCanExchange(game.MaxCanExchange(bagTiles, ng.ExchangeLimit()))
 	mg.GenAll(rack, exchAllowed)
 	// Collect plays
 	type hasPlays interface{ Plays() []*move.Move }

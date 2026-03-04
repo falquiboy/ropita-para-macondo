@@ -87,6 +87,22 @@ type Session struct {
 	// Analysis: racks actually used per ply (tokens placed), aligned with fallback hist length
 	manualPlyRacks []string
 
+	// Full racks indexed by turn/event number. Stores the complete rack the
+	// player had BEFORE making their move at that turn. Populated only when
+	// the rack was explicitly defined by the user (via set_rack), NOT when
+	// it was randomly assigned by the system.
+	manualFullRacks map[int]string
+
+	// Tracks whether each player's current rack was explicitly set by the
+	// user via set_rack (true) vs randomly assigned by the system (false).
+	// Reset to false after the player makes a move.
+	manualRackSet [2]bool
+
+	// Challenged phony words indexed by the PASS event's turn number.
+	// Populated when the user challenges a phony: the word is stored so
+	// the scoresheet and GCG export can annotate the penalty pass.
+	challengedWords map[int]string
+
 	// Analysis bag: remaining counts per token key (e.g., "A", "[CH]", "?")
 	AnalysisBag map[string]int
 
@@ -100,6 +116,7 @@ type AnalysisSnapshot struct {
 	OnTurn     int
 	HistLen    int
 	PlyRacks   []string
+	FullRacks  map[int]string // full racks indexed by turn number
 	ManualRack [2]string
 	Bag        map[string]int
 	HistRows   []HistRow
@@ -113,6 +130,13 @@ func (s *Session) captureSnapshot() AnalysisSnapshot {
 		tmp := make([]string, len(s.manualPlyRacks))
 		copy(tmp, s.manualPlyRacks)
 		snap.PlyRacks = tmp
+	}
+	if len(s.manualFullRacks) > 0 {
+		tmp := make(map[int]string, len(s.manualFullRacks))
+		for k, v := range s.manualFullRacks {
+			tmp[k] = v
+		}
+		snap.FullRacks = tmp
 	}
 	snap.ManualRack = s.ManualRack
 	if s.AnalysisBag != nil {
@@ -144,6 +168,14 @@ func (s *Session) restoreSnapshot(snap AnalysisSnapshot) {
 		s.manualPlyRacks = append([]string(nil), snap.PlyRacks...)
 	} else {
 		s.manualPlyRacks = nil
+	}
+	if snap.FullRacks != nil {
+		s.manualFullRacks = make(map[int]string, len(snap.FullRacks))
+		for k, v := range snap.FullRacks {
+			s.manualFullRacks[k] = v
+		}
+	} else {
+		s.manualFullRacks = nil
 	}
 	s.ManualRack = snap.ManualRack
 	if snap.Bag != nil {
@@ -187,6 +219,88 @@ func (s *Session) AppendPlyRack(r string) { s.manualPlyRacks = append(s.manualPl
 
 // ManualPlyRacks exposes placed-rack list for handlers
 func (s *Session) ManualPlyRacks() []string { return s.manualPlyRacks }
+
+// SetFullRack stores the full rack for a specific turn/event index.
+func (s *Session) SetFullRack(turn int, r string) {
+	if s.manualFullRacks == nil {
+		s.manualFullRacks = make(map[int]string)
+	}
+	s.manualFullRacks[turn] = r
+}
+
+// SetManualRackFlag marks whether a player's rack was explicitly set by the user.
+func (s *Session) SetManualRackFlag(player int, val bool) {
+	if player >= 0 && player <= 1 {
+		s.manualRackSet[player] = val
+	}
+}
+
+// ManualRackFlag returns true if the player's rack was explicitly set by the user.
+func (s *Session) ManualRackFlag(player int) bool {
+	if player >= 0 && player <= 1 {
+		return s.manualRackSet[player]
+	}
+	return false
+}
+
+// FullRackAt returns the best known rack for a given turn/event index:
+// full rack if stored, otherwise placed-only rack from manualPlyRacks.
+func (s *Session) FullRackAt(turn int) string {
+	if s.manualFullRacks != nil {
+		if fr, ok := s.manualFullRacks[turn]; ok && strings.TrimSpace(fr) != "" {
+			return fr
+		}
+	}
+	if turn >= 0 && turn < len(s.manualPlyRacks) {
+		return s.manualPlyRacks[turn]
+	}
+	return ""
+}
+
+// SetChallengedWord records the phony word that was challenged at a given
+// turn/event index (the index of the PHONY_TILES_RETURNED event).
+func (s *Session) SetChallengedWord(turn int, word string) {
+	if s.challengedWords == nil {
+		s.challengedWords = make(map[int]string)
+	}
+	s.challengedWords[turn] = word
+}
+
+// ChallengedWordAt returns the challenged phony word for a given turn, or "".
+func (s *Session) ChallengedWordAt(turn int) string {
+	if s.challengedWords != nil {
+		return s.challengedWords[turn]
+	}
+	return ""
+}
+
+// ChallengeLastPlay issues a proper Macondo ChallengeEvent (PHONY_TILES_RETURNED)
+// for the last play. The phony tiles are removed from the board, the score is
+// deducted, and a hist row is appended to keep s.hist aligned with game events.
+// Returns the event index of the PHONY_TILES_RETURNED event, or error.
+func (s *Session) ChallengeLastPlay() (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	playLegal, err := s.Game.ChallengeEvent(0, 0)
+	if err != nil {
+		return -1, err
+	}
+	if playLegal {
+		return -1, fmt.Errorf("word is valid, cannot challenge")
+	}
+	// Append hist row for the PHONY_TILES_RETURNED event.
+	evs := s.Game.History().GetEvents()
+	ev := evs[len(evs)-1]
+	s.appendHist(HistRow{
+		Ply:    len(s.hist) + 1,
+		Player: int(ev.GetPlayerIndex()),
+		Type:   "PHONY_TILES_RETURNED",
+		Word:   formatPlayedTilesDisplay(ev.GetPlayedTiles()),
+		Score:  -int(ev.GetLostScore()),
+		Cum:    int(ev.GetCumulative()),
+	})
+	return len(evs) - 1, nil
+}
 
 // RebuildToTurn reconstructs the Game state to the specified turn (0..len(events))
 func (s *Session) RebuildToTurn(turn int) error {
@@ -302,6 +416,7 @@ func (s *Session) TruncateToTurn(turn int) error {
 	s.manualUndo = nil
 	s.manualRedo = nil
 	s.manualPlyRacks = nil
+	s.manualFullRacks = nil
 	s.AnalysisBag = nil
 
 	return nil
@@ -436,6 +551,9 @@ func NewSession(id, ruleset, kwgPath string) (*Session, error) {
 	}
 	// Initialize history/state and deal racks
 	g.StartGame()
+	// Enable interactive backup so ChallengeEvent / UnplayLastMove works.
+	g.SetBackupMode(game.InteractiveGameplayMode)
+	g.SetStateStackLength(1)
 	// Default to SINGLE challenge rule per Spanish preference
 	g.SetChallengeRule(pb.ChallengeRule_SINGLE)
 	// OSPS: end after two scoreless turns per player (4 consecutives total)
@@ -1068,6 +1186,11 @@ func min(a, b int) int {
 	return b
 }
 
+// RecordPlayEvent appends a PLAY event to fallback history (exported for AcceptLivePlay).
+func (s *Session) RecordPlayEvent(player int, pm *move.Move) {
+	s.recordPlayEvent(player, pm)
+}
+
 // recordPlayEvent appends a PLAY event to fallback history.
 func (s *Session) recordPlayEvent(player int, pm *move.Move) {
 	r, c, v := pm.CoordsAndVertical()
@@ -1082,7 +1205,7 @@ func (s *Session) recordPlayEvent(player int, pm *move.Move) {
 	// We compute cumulative from game directly to be accurate
 	cum := s.Game.PointsFor(player)
 	if word == "" {
-		word = strings.ReplaceAll(pm.TilesString(), ".", "")
+		word = stripAllDigraphBrackets(strings.ReplaceAll(pm.TilesString(), ".", ""))
 	}
 	s.appendHist(HistRow{Ply: len(s.hist) + 1, Player: player, Type: "PLAY", Word: word, Row: r, Col: c, Dir: dir, Score: sc, Cum: cum})
 }
@@ -1123,7 +1246,7 @@ func (s *Session) buildWordDisplay(pm *move.Move) string {
 		if ml == 0 {
 			break
 		}
-		letter := alph.Letter(ml)
+		letter := stripDigraphBrackets(alph.Letter(ml))
 		// Check if the tile is a blank (IsBlanked returns true for blank tiles)
 		if ml.IsBlanked() {
 			letter = strings.ToLower(letter)
@@ -1146,7 +1269,7 @@ func (s *Session) buildWordDisplay(pm *move.Move) string {
 			letter := ""
 			isBlank := false
 			if ml != 0 {
-				letter = alph.Letter(ml)
+				letter = stripDigraphBrackets(alph.Letter(ml))
 				isBlank = ml.IsBlanked()
 				if isBlank {
 					letter = strings.ToLower(letter)
@@ -1180,7 +1303,7 @@ func (s *Session) buildWordDisplay(pm *move.Move) string {
 		if ml == 0 {
 			break
 		}
-		letter := alph.Letter(ml)
+		letter := stripDigraphBrackets(alph.Letter(ml))
 		// Check if the tile is a blank
 		if ml.IsBlanked() {
 			letter = strings.ToLower(letter)
@@ -1260,6 +1383,39 @@ func isLowercaseToken(tk string) bool {
 		return unicode.IsLower(runes[0])
 	}
 	return false
+}
+
+// stripDigraphBrackets removes brackets from digraph notation for display
+// "[CH]" -> "CH", "[ch]" -> "ch", "A" -> "A"
+func stripDigraphBrackets(s string) string {
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
+// stripAllDigraphBrackets removes all bracket notation from a word string for display
+// "A[CH]O" -> "ACHO", "A[ch]O" -> "AchO"
+func stripAllDigraphBrackets(s string) string {
+	var out strings.Builder
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		if runes[i] == '[' {
+			// Find closing bracket
+			j := i + 1
+			for j < len(runes) && runes[j] != ']' {
+				j++
+			}
+			if j < len(runes) {
+				// Write inner content without brackets
+				out.WriteString(string(runes[i+1 : j]))
+				i = j
+				continue
+			}
+		}
+		out.WriteRune(runes[i])
+	}
+	return out.String()
 }
 
 func (s *Session) appendHist(h HistRow) { s.hist = append(s.hist, h) }
@@ -1513,6 +1669,18 @@ func (s *Session) maybeAutoChallenge() {
 	if err := s.Game.ValidateWords(s.Game.Lexicon(), mws); err != nil {
 		// It's a phony: current onturn is the opponent, so issue challenge
 		_, _ = s.Game.ChallengeEvent(0, 0)
+		// Append hist row for the PHONY_TILES_RETURNED event to keep
+		// s.hist aligned with game events.
+		evs := s.Game.History().GetEvents()
+		ev := evs[len(evs)-1]
+		s.appendHist(HistRow{
+			Ply:    len(s.hist) + 1,
+			Player: int(ev.GetPlayerIndex()),
+			Type:   "PHONY_TILES_RETURNED",
+			Word:   formatPlayedTilesDisplay(ev.GetPlayedTiles()),
+			Score:  -int(ev.GetLostScore()),
+			Cum:    int(ev.GetCumulative()),
+		})
 	}
 }
 
@@ -1540,10 +1708,15 @@ func (s *Session) ScoreRows() []HistRow {
 			if e.GetDirection() == pb.GameEvent_VERTICAL {
 				dir = "V"
 			}
-			rows = append(rows, HistRow{
+			// PHONY_TILES_RETURNED uses LostScore (negative) not Score.
+		score := int(e.GetScore())
+		if e.GetType() == pb.GameEvent_PHONY_TILES_RETURNED {
+			score = -int(e.GetLostScore())
+		}
+		rows = append(rows, HistRow{
 				Ply: i + 1, Player: int(e.GetPlayerIndex()), Type: t, Word: word,
 				Row: int(e.GetRow()), Col: int(e.GetColumn()), Dir: dir,
-				Score: int(e.GetScore()), Cum: int(e.GetCumulative()),
+				Score: score, Cum: int(e.GetCumulative()),
 			})
 		}
 		return rows

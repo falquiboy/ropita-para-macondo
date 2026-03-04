@@ -93,6 +93,17 @@
       .final-modal .meta { font-size:14px; color:#374151; margin-bottom:12px; }
       .final-modal .actions { display:flex; gap:8px; justify-content:flex-end; }
       .badge-final { position:absolute; top:-10px; right:-10px; background:#111827; color:#fff; font-size:10px; padding:2px 6px; border-radius:10px; opacity:.9; }
+      /* Phony challenge modal */
+      .phony-modal { position:fixed; inset:0; background:rgba(0,0,0,0.45); display:flex; align-items:center; justify-content:center; z-index:60; }
+      .phony-modal .panel { background:#fff; border-radius:8px; padding:20px 24px; width:min(92vw,440px); box-shadow:0 10px 30px rgba(0,0,0,0.25); text-align:center; }
+      .phony-modal .title { font-size:18px; font-weight:700; margin-bottom:8px; color:#991b1b; }
+      .phony-modal .word { font-size:22px; font-weight:700; letter-spacing:2px; margin:12px 0; color:#111827; }
+      .phony-modal .meta { font-size:14px; color:#374151; margin-bottom:16px; }
+      .phony-modal .actions { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
+      .phony-modal .actions button { padding:8px 16px; border-radius:4px; border:1px solid #d1d5db; cursor:pointer; font-size:13px; }
+      .phony-modal .btn-accept { background:#fef3c7; border-color:#f59e0b; color:#92400e; }
+      .phony-modal .btn-challenge { background:#fee2e2; border-color:#ef4444; color:#991b1b; font-weight:600; }
+      .phony-modal .btn-cancel { background:#f3f4f6; color:#374151; }
       /* Post-mortem moves table selection */
       #tnTable tbody tr.sel { background:#eef6ff; }
       #tnTable tbody tr.played { font-weight: bold; }
@@ -314,7 +325,7 @@
           <option value="sim">Simulation</option>
         </select>
       </label>
-      <label>Top N <input id="topN" type="number" value="25" style="width:5rem" /></label>
+      <label>Top N <input id="topN" type="number" value="50" style="width:5rem" /></label>
     </div>
     <div class="row" style="display:none">
       <div style="display:flex;flex-direction:column;margin-right:1px">
@@ -1982,6 +1993,11 @@ async function refreshUnseenAtTurn(n){
         try { const tr = tb.querySelectorAll('tbody tr')[tnSelPos]; idx = Number(tr.getAttribute('data-idx')||'-1'); } catch(_){ }
         if (!(idx>=0 && idx < tnMoves.length)) { previewPlacements={}; lastHighlight=null; renderMatchBoard(); return; }
         const mv = tnMoves[idx] || {};
+        // Exchanges and passes have no board placement — clear preview
+        const mvTyp = String(mv.type||'').toUpperCase();
+        if (mvTyp === 'EXCH' || mvTyp === 'EXCHANGE' || mvTyp === 'PASS') {
+          previewPlacements={}; lastHighlight=null; renderMatchBoard(); return;
+        }
         try{
           const dir = String(mv.dir||'H').toUpperCase();
           let r = (mv.row|0), c = (mv.col|0);
@@ -2216,38 +2232,50 @@ async function refreshUnseenAtTurn(n){
       function renderHistoryGrouped(rows){
         const div = document.getElementById('matchHistory'); if(!div) return;
         const rounds = [];
+        // Collect special endgame rows separately.
+        const endRackRows = []; // END_RACK_PTS (one per player)
+        let finalScoreRow = null; // FINAL_SCORE
         for (const r of (rows||[])){
+          const typ = String(r.type||'').toUpperCase();
+          if (typ === 'END_RACK_PTS') { endRackRows.push(r); continue; }
+          if (typ === 'FINAL_SCORE') { finalScoreRow = r; continue; }
           const idx = Math.floor(((r.ply||1)-1)/2);
           if (!rounds[idx]) rounds[idx] = { n: idx+1, you: null, bot: null };
-          const typ = String(r.type||'').toUpperCase();
           const isMeta = (typ==='EXCH' || typ==='EXCHANGE' || typ==='PASS');
           const coord = isMeta ? '' : ((r.row>=0 && r.col>=0) ? coordsStr(r.row, r.col, r.dir) : '');
-          const cell = { word: r.word||'', played: r.played||'', coord, score: r.score||0, type: typ, cum: r.cum||0 };
+          const cell = { word: r.word||'', played: r.played||'', coord, score: r.score||0, type: typ, cum: r.cum||0, note: r.note||'' };
           if (r.player === 0) rounds[idx].you = cell; else rounds[idx].bot = cell;
         }
         const sc = (window.historyScore||[0,0]);
         const nm = (window.historyNames||{left:'Tú', right:'Bot'});
-        // Table back to auto layout; widen palabra columns with min/max width hints
+        const thB = 'border-bottom:1px solid #e5e7eb;';
+        const thP = 'padding:4px;';
+        // Table with cumulative and differential columns
         let html = '<table style="width:auto;border-collapse:collapse;font-size:12px; table-layout:auto; white-space:nowrap">'+
           '<thead>'+
           '<tr style="background:#f8fafc">'+
-          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb; border-right:1px solid #e5e7eb"></th>'+
-          '<th colspan="3" style="padding:4px;border-bottom:1px solid #e5e7eb; font-weight:800;">'+ nm.left +'</th>'+
-          '<th colspan="3" style="padding:4px;border-bottom:1px solid #e5e7eb; font-weight:800; border-left:1px solid #e5e7eb;">'+ nm.right +'</th>'+
+          `<th style="text-align:left;${thP}${thB} border-right:1px solid #e5e7eb"></th>`+
+          `<th colspan="4" style="${thP}${thB} font-weight:800;">${nm.left}</th>`+
+          `<th colspan="4" style="${thP}${thB} font-weight:800; border-left:1px solid #e5e7eb;">${nm.right}</th>`+
+          `<th style="${thP}${thB} border-left:1px solid #e5e7eb;"></th>`+
           '</tr>'+
           '<tr style="background:#f8fafc">'+
-          '<th style="padding:0;border-bottom:1px solid #e5e7eb; border-right:1px solid #e5e7eb"></th>'+
-          '<th colspan="3" style="padding:2px 4px;border-bottom:1px solid #e5e7eb; font-weight:700;">'+ (sc[0]||0) +'</th>'+
-          '<th colspan="3" style="padding:2px 4px;border-bottom:1px solid #e5e7eb; font-weight:700; border-left:1px solid #e5e7eb;">'+ (sc[1]||0) +'</th>'+
+          `<th style="padding:0;${thB} border-right:1px solid #e5e7eb"></th>`+
+          `<th colspan="4" style="padding:2px 4px;${thB} font-weight:700;">${sc[0]||0}</th>`+
+          `<th colspan="4" style="padding:2px 4px;${thB} font-weight:700; border-left:1px solid #e5e7eb;">${sc[1]||0}</th>`+
+          `<th style="padding:2px 4px;${thB} border-left:1px solid #e5e7eb;"></th>`+
           '</tr>'+
           '<tr style="background:#f8fafc">'+
-          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb; border-right:1px solid #e5e7eb">Ronda</th>'+
-          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Coord</th>'+
-          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Palabra</th>'+
-          '<th style="text-align:right;padding:4px;border-bottom:1px solid #e5e7eb">Pts</th>'+
-          '<th style="text-align:left;padding:4px;border-left:1px solid #e5e7eb; border-bottom:1px solid #e5e7eb">Coord</th>'+
-          '<th style="text-align:left;padding:4px;border-bottom:1px solid #e5e7eb">Palabra</th>'+
-          '<th style="text-align:right;padding:4px;border-bottom:1px solid #e5e7eb">Pts</th>'+
+          `<th style="text-align:left;${thP}${thB} border-right:1px solid #e5e7eb">Ronda</th>`+
+          `<th style="text-align:left;${thP}${thB}">Coord</th>`+
+          `<th style="text-align:left;${thP}${thB}">Palabra</th>`+
+          `<th style="text-align:right;${thP}${thB}">Pts</th>`+
+          `<th style="text-align:right;${thP}${thB};color:#6b7280;font-size:11px">Acum</th>`+
+          `<th style="text-align:left;${thP}border-left:1px solid #e5e7eb;${thB}">Coord</th>`+
+          `<th style="text-align:left;${thP}${thB}">Palabra</th>`+
+          `<th style="text-align:right;${thP}${thB}">Pts</th>`+
+          `<th style="text-align:right;${thP}${thB};color:#6b7280;font-size:11px">Acum</th>`+
+          `<th style="text-align:right;${thP}border-left:1px solid #e5e7eb;${thB};color:#6b7280;font-size:11px">Dif</th>`+
           '</tr>'+
           '</thead><tbody>';
         for (const r of rounds){ if(!r) continue; const y=r.you||{}, b=r.bot||{};
@@ -2262,29 +2290,83 @@ async function refreshUnseenAtTurn(n){
             const tiles = tokensToPlain(source);
             yt = tiles ? `exch ${tiles}` : 'exch';
           } else if (String(y.type||'').toUpperCase()==='PASS') {
-            yt = 'pass';
+            yt = y.note ? `\u274c ${y.note}` : 'pass';
+          } else if (String(y.type||'').toUpperCase()==='PHONY_TILES_RETURNED') {
+            yt = `<s>${y.word||'Phony'}</s>`;
           }
 
           let bt = b.word||'';
+          const botRackVisible = document.getElementById('showBotRack')?.checked || false;
           if (isBotExch) {
-            // For bot exchanges, use 'played' field if 'word' is empty, but show count only
+            // Show tile identities when bot rack is visible, count otherwise
             const source = b.word || b.played || '';
             const tiles = tokensToPlain(source);
-            const count = tiles ? tiles.length : 0;
-            bt = count > 0 ? `exch ${count}` : 'exch';
+            if (botRackVisible && tiles) {
+              bt = `exch ${tiles}`;
+            } else {
+              const count = tiles ? tiles.length : 0;
+              bt = count > 0 ? `exch ${count}` : 'exch';
+            }
           } else if (String(b.type||'').toUpperCase()==='PASS') {
-            bt = 'pass';
+            bt = b.note ? `\u274c ${b.note}` : 'pass';
+          } else if (String(b.type||'').toUpperCase()==='PHONY_TILES_RETURNED') {
+            bt = `<s>${b.word||'Phony'}</s>`;
           }
-          const yCoord = (String(y.type||'').toUpperCase()==='EXCH' || String(y.type||'').toUpperCase()==='EXCHANGE' || String(y.type||'').toUpperCase()==='PASS') ? '' : (y.coord||'');
-          const bCoord = (String(b.type||'').toUpperCase()==='EXCH' || String(b.type||'').toUpperCase()==='EXCHANGE' || String(b.type||'').toUpperCase()==='PASS') ? '' : (b.coord||'');
+          const yTypU = String(y.type||'').toUpperCase();
+          const bTypU = String(b.type||'').toUpperCase();
+          const yCoord = (yTypU==='EXCH' || yTypU==='EXCHANGE' || yTypU==='PASS') ? '' : (y.coord||'');
+          const bCoord = (bTypU==='EXCH' || bTypU==='EXCHANGE' || bTypU==='PASS') ? '' : (b.coord||'');
+          const yCum = y.cum||0;
+          const bCum = b.cum||0;
+          const diff = yCum - bCum;
+          const diffStr = diff > 0 ? `+${diff}` : String(diff);
+          const diffColor = diff > 0 ? '#16a34a' : (diff < 0 ? '#dc2626' : '#6b7280');
+          const rB = 'border-bottom:1px solid #f1f5f9;';
+          const cumSt = `padding:4px;${rB}text-align:right;color:#6b7280;font-size:11px;`;
           html += '<tr>'+
-            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9; border-right:1px solid #e5e7eb\">${r.n}</td>`+
-            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;\">${yCoord}</td>`+
-            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;\">${yt}</td>`+
-            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9;text-align:right\">${(y.score!=null?y.score:'')}</td>`+
-            `<td style=\"padding:4px;border-left:1px solid #e5e7eb; border-bottom:1px solid #f1f5f9; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;\">${bCoord}</td>`+
-            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;\">${bt}</td>`+
-            `<td style=\"padding:4px;border-bottom:1px solid #f1f5f9;text-align:right\">${(b.score!=null?b.score:'')}</td>`+
+            `<td style="padding:4px;${rB} border-right:1px solid #e5e7eb">${r.n}</td>`+
+            `<td style="padding:4px;${rB} overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${yCoord}</td>`+
+            `<td style="padding:4px;${rB} overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${yt}</td>`+
+            `<td style="padding:4px;${rB}text-align:right">${(y.score!=null?y.score:'')}</td>`+
+            `<td style="${cumSt}">${yCum||''}</td>`+
+            `<td style="padding:4px;border-left:1px solid #e5e7eb;${rB} overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${bCoord}</td>`+
+            `<td style="padding:4px;${rB} overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${bt}</td>`+
+            `<td style="padding:4px;${rB}text-align:right">${(b.score!=null?b.score:'')}</td>`+
+            `<td style="${cumSt}">${bCum||''}</td>`+
+            `<td style="padding:4px;border-left:1px solid #e5e7eb;${rB}text-align:right;font-weight:600;font-size:11px;color:${diffColor}">${(yCum||bCum)?diffStr:''}</td>`+
+          '</tr>';
+        }
+        // Endgame adjustment rows (Spanish-style cierre).
+        if (endRackRows.length > 0) {
+          // Pair adjustments by player: p0 = player 0, p1 = player 1.
+          let p0 = null, p1 = null;
+          for (const er of endRackRows) {
+            if (er.player === 0) p0 = er; else p1 = er;
+          }
+          const adjStyle = 'padding:4px;border-top:2px solid #e5e7eb;background:#fef9ee;font-style:italic;font-size:11px;';
+          const p0cum = p0 ? p0.cum : '';
+          const p1cum = p1 ? p1.cum : '';
+          const endDiff = (p0cum !== '' && p1cum !== '') ? (p0cum - p1cum) : '';
+          const endDiffStr = endDiff !== '' ? (endDiff > 0 ? `+${endDiff}` : String(endDiff)) : '';
+          const endDiffColor = endDiff > 0 ? '#16a34a' : (endDiff < 0 ? '#dc2626' : '#6b7280');
+          html += '<tr>' +
+            `<td style="${adjStyle}border-right:1px solid #e5e7eb;font-weight:600">Cierre</td>` +
+            `<td style="${adjStyle}"></td>` +
+            `<td style="${adjStyle}">${p0 ? p0.word : ''}</td>` +
+            `<td style="${adjStyle}text-align:right;font-weight:600">${p0 ? p0.score : ''}</td>` +
+            `<td style="${adjStyle}text-align:right;color:#6b7280">${p0cum}</td>` +
+            `<td style="${adjStyle}border-left:1px solid #e5e7eb;"></td>` +
+            `<td style="${adjStyle}">${p1 ? p1.word : ''}</td>` +
+            `<td style="${adjStyle}text-align:right;font-weight:600">${p1 ? p1.score : ''}</td>` +
+            `<td style="${adjStyle}text-align:right;color:#6b7280">${p1cum}</td>` +
+            `<td style="${adjStyle}border-left:1px solid #e5e7eb;text-align:right;font-weight:600;color:${endDiffColor}">${endDiffStr}</td>` +
+          '</tr>';
+        }
+        // Final score footer row.
+        if (finalScoreRow) {
+          const fsStyle = 'padding:6px 4px;border-top:2px solid #111827;background:#f3f4f6;font-weight:800;font-size:12px;';
+          html += '<tr>' +
+            `<td colspan="10" style="${fsStyle}text-align:center">${finalScoreRow.note||''}</td>` +
           '</tr>';
         }
         html += '</tbody></table>';
@@ -2379,18 +2461,55 @@ async function refreshUnseenAtTurn(n){
         }
         return result.join('');
       }
+      // Show a custom modal for phony detection with Accept / Challenge / Cancel.
+      // Returns a Promise resolving to 'accept', 'challenge', or 'cancel'.
+      function showPhonyModal(fullWord){
+        return new Promise(resolve => {
+          const overlay = document.createElement('div');
+          overlay.className = 'phony-modal';
+          overlay.innerHTML = `<div class="panel">
+            <div class="title">PHONY DETECTADO</div>
+            <div class="word">${fullWord}</div>
+            <div class="meta">La palabra no est\u00e1 en el diccionario.</div>
+            <div class="actions">
+              <button class="btn-accept">Aceptar (no impugnar)</button>
+              <button class="btn-challenge">Impugnar</button>
+              <button class="btn-cancel">Cancelar</button>
+            </div>
+          </div>`;
+          document.body.appendChild(overlay);
+          const cleanup = () => { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); };
+          overlay.querySelector('.btn-accept').onclick   = () => { cleanup(); resolve('accept'); };
+          overlay.querySelector('.btn-challenge').onclick = () => { cleanup(); resolve('challenge'); };
+          overlay.querySelector('.btn-cancel').onclick    = () => { cleanup(); resolve('cancel'); };
+        });
+      }
       async function forcePhonyPlay(payload, errMsg){
         if (!payload) return false;
         const cleanErr = (errMsg && String(errMsg).trim()) ? String(errMsg).trim() : '';
         const isPhony = looksLikeInvalidWord(cleanErr);
-        let confirmMsg;
+        // --- Phony: show custom 3-option modal ---
         if (isPhony) {
           const fullWord = buildFullWordForDisplay(payload);
-          confirmMsg = `⚠️ PHONY DETECTADO ⚠️\n\nLa palabra "${fullWord}" no está en el diccionario.\n\n¿Desea colocarla de todas formas?\n\n(Esto simula una jugada no impugnada en partida real)`;
+          const choice = await showPhonyModal(fullWord);
+          if (choice === 'cancel') return false;
+          if (choice === 'challenge') {
+            try {
+              const challengeBody = Object.assign({}, payload, {display_word: fullWord});
+              const res = await fetch(`/matches/${matchId}/challenge`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(challengeBody)});
+              const j = await res.json();
+              if (!res.ok || (j && j.error)){ alert((j && j.error) || 'No se pudo impugnar.'); return false; }
+              await refreshMatch(); await refreshHistory();
+              return true;
+            } catch(err){ console.error('challenge error', err); alert('No se pudo impugnar.'); return false; }
+          }
+          // choice === 'accept': fall through to /accept below
         } else {
-          confirmMsg = cleanErr ? `La jugada fue rechazada (${cleanErr}). ¿Forzarla igualmente?` : 'La jugada fue rechazada. ¿Forzarla igualmente?';
+          // --- Non-phony rejection: keep simple confirm ---
+          const confirmMsg = cleanErr ? `La jugada fue rechazada (${cleanErr}). \u00bfForzarla igualmente?` : 'La jugada fue rechazada. \u00bfForzarla igualmente?';
+          if (!window.confirm(confirmMsg)) return false;
         }
-        if (!window.confirm(confirmMsg)) return false;
+        // POST /accept (for accepted phonies and forced non-phony plays)
         try{
           const res = await fetch(`/matches/${matchId}/accept`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
           const j = await res.json();

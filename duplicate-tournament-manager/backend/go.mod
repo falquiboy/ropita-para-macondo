@@ -6,6 +6,7 @@ require (
 	github.com/domino14/macondo v0.11.2
 	github.com/domino14/word-golib v0.2.15
 	github.com/rs/zerolog v1.34.0
+	google.golang.org/protobuf v1.36.6
 )
 
 require (
@@ -41,7 +42,6 @@ require (
 	gonum.org/v1/gonum v0.16.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250603155806-513f23925822 // indirect
 	google.golang.org/grpc v1.73.0 // indirect
-	google.golang.org/protobuf v1.36.6 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorgonia.org/cu v0.9.0-beta // indirect
 	gorgonia.org/dawson v1.1.0 // indirect
@@ -51,3 +51,5 @@ require (
 	gorgonia.org/vecf64 v0.9.0 // indirect
 	lukechampine.com/frand v1.5.1 // indirect
 )
+
+replace github.com/domino14/macondo => ../../macondo
