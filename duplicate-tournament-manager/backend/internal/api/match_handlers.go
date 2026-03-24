@@ -2445,6 +2445,9 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode")))
+	log.Printf("[MovesAt] REQUEST turn=%d mode=%s deep=%s iters=%s plies=%s topK=%s threads=%s player=%s",
+		turn, mode, r.URL.Query().Get("deep"), r.URL.Query().Get("iters"), r.URL.Query().Get("plies"),
+		r.URL.Query().Get("topK"), r.URL.Query().Get("threads"), r.URL.Query().Get("player"))
 	// Optimized defaults for stronger play
 	optimalThreads := max(1, min(8, runtime.NumCPU()-1))
 	iters, plies, topk, threads := 1500, 4, 50, optimalThreads
@@ -2684,23 +2687,46 @@ func (m *MatchHandlers) MovesAt(w http.ResponseWriter, r *http.Request) {
 			threads = max(1, min(8, runtime.NumCPU()-1))
 		}
 		simmer.SetThreads(threads)
+		deep := r.URL.Query().Get("deep") == "1"
+		log.Printf("[MovesAt] SIM CONFIG deep=%v threads=%d iters=%d plies=%d topK=%d candidates=%d", deep, threads, iters, plies, topk, len(cand))
 		simmer.SetStoppingCondition(montecarlo.Stop99)
 		simmer.SetAutostopCheckInterval(16)
+		log.Printf("[MovesAt] Stop99 ENABLED (check/16), deep=%v", deep)
 		if err := simmer.PrepareSim(plies, cand); err != nil {
+			log.Printf("[MovesAt] PrepareSim FAILED: %v", err)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		log.Printf("[MovesAt] PrepareSim OK, starting simulation...")
+		simStart := time.Now()
+
+		// Simulation timeout from env (default 45s, deep gets 2x)
+		simTO := 45 * time.Second
+		if s := strings.TrimSpace(os.Getenv("MACONDO_SIM_TIMEOUT_MS")); s != "" {
+			if ms, err := time.ParseDuration(s + "ms"); err == nil && ms > 0 {
+				simTO = ms
+			}
+		}
+		if deep {
+			simTO = simTO * 2
+		}
+		log.Printf("[MovesAt] Simulation timeout: %v", simTO)
 
 		// Use multi-threaded simulation for analysis when beneficial
 		if threads > 1 {
-			ctx := context.Background()
+			ctx, cancel := context.WithTimeout(context.Background(), simTO)
+			defer cancel()
+			log.Printf("[MovesAt] Running MULTI-THREAD simulation (threads=%d)", threads)
 			if err := simmer.Simulate(ctx); err != nil {
+				log.Printf("[MovesAt] Simulate FAILED after %v: %v", time.Since(simStart), err)
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("simulation failed: %v", err)})
 				return
 			}
 		} else {
+			log.Printf("[MovesAt] Running SINGLE-THREAD simulation (iters=%d plies=%d)", iters, plies)
 			simmer.SimSingleThread(iters, plies)
 		}
+		log.Printf("[MovesAt] Simulation COMPLETE in %v", time.Since(simStart))
 		sp := simmer.PlaysByWinProb().PlaysNoLock()
 		for _, simPlay := range sp {
 			pm := simPlay.Move()

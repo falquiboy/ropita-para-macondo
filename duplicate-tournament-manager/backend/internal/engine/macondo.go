@@ -130,20 +130,22 @@ func baseLexiconName(kwgPath string) string {
     return base
 }
 
+func statOK(p string) bool { _, err := os.Stat(p); return err == nil }
+
 func findKLV2(base string) string {
     // Try KLV2_DIR env
     if dir := os.Getenv("KLV2_DIR"); dir != "" {
-        p := dir + "/" + base + ".klv2"
+        p := filepath.Join(dir, base+".klv2")
         if _, err := os.Stat(p); err == nil { return p }
     }
     // Try cwd
     if _, err := os.Stat(base + ".klv2"); err == nil { return base + ".klv2" }
     // Try parent of backend (../../<base>.klv2) when running from backend/
-    if _, err := os.Stat("../../" + base + ".klv2"); err == nil { return "../../" + base + ".klv2" }
+    if p := filepath.Join("..", "..", base+".klv2"); statOK(p) { return p }
     // Try lexica subfolder variants
-    if _, err := os.Stat("lexica/" + base + ".klv2"); err == nil { return "lexica/" + base + ".klv2" }
-    if _, err := os.Stat("../lexica/" + base + ".klv2"); err == nil { return "../lexica/" + base + ".klv2" }
-    if _, err := os.Stat("../../lexica/" + base + ".klv2"); err == nil { return "../../lexica/" + base + ".klv2" }
+    if p := filepath.Join("lexica", base+".klv2"); statOK(p) { return p }
+    if p := filepath.Join("..", "lexica", base+".klv2"); statOK(p) { return p }
+    if p := filepath.Join("..", "..", "lexica", base+".klv2"); statOK(p) { return p }
     // Try repo-root relative to executable
     if ex, err := os.Executable(); err == nil {
         // backend/internal/engine → repo-root at ../../..

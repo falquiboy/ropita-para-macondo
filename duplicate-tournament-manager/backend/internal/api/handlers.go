@@ -478,7 +478,7 @@ func (h *Handlers) Moves(w http.ResponseWriter, r *http.Request) {
             tryNames := []string{lex + ".klv2", "FILE2017.klv2", "FISE2017.klv2"}
             if dir := os.Getenv("KLV2_DIR"); dir != "" {
                 for _, nm := range tryNames {
-                    cand := dir + "/" + nm
+                    cand := filepath.Join(dir, nm)
                     if st, e := os.Stat(cand); e == nil && st.Size() > 0 { req.KLV2Path = cand; break }
                 }
             }
@@ -622,9 +622,9 @@ func stageLeavesIfAvailable(cfg *mconfig.Config, lexicon string) error {
     if src == "" { return nil }
     dataDir := cfg.GetString(mconfig.ConfigDataPath)
     if strings.TrimSpace(dataDir) == "" { return nil }
-    dstDir := dataDir + "/strategy/" + lexicon
+    dstDir := filepath.Join(dataDir, "strategy", lexicon)
     _ = os.MkdirAll(dstDir, 0o755)
-    dst := dstDir + "/" + mequity.LeavesFilename
+    dst := filepath.Join(dstDir, mequity.LeavesFilename)
     // Copy if missing or size differs
     si, _ := os.Stat(src)
     di, derr := os.Stat(dst)
@@ -645,7 +645,7 @@ func hasLeavesAvailable(cfg *mconfig.Config, lexicon string) bool {
     // Check staged path
     dataDir := cfg.GetString(mconfig.ConfigDataPath)
     if strings.TrimSpace(dataDir) != "" {
-        dst := dataDir + "/strategy/" + lexicon + "/" + mequity.LeavesFilename
+        dst := filepath.Join(dataDir, "strategy", lexicon, mequity.LeavesFilename)
         if st, err := os.Stat(dst); err == nil && st.Size() > 0 { return true }
     }
     // Check root files
@@ -846,35 +846,37 @@ func indexOf(hay, needle string) int {
     return -1
 }
 
+func statExists(p string) bool { _, err := os.Stat(p); return err == nil }
+
 // findRootFile tries to locate a file at repo root or CWD (when server runs in backend/)
 func findRootFile(name string) string {
     if name == "" { return "" }
     // Try current working dir
     if _, err := os.Stat(name); err == nil { return name }
     // Try ../../name (repo root when cwd is backend)
-    if _, err := os.Stat("../../" + name); err == nil { return "../../" + name }
+    if p := filepath.Join("..", "..", name); statExists(p) { return p }
     // Try ../name (when cwd is duplicate-tournament-manager)
-    if _, err := os.Stat("../" + name); err == nil { return "../" + name }
+    if p := filepath.Join("..", name); statExists(p) { return p }
     // Try lexica/ subfolder variants
-    if _, err := os.Stat("lexica/" + name); err == nil { return "lexica/" + name }
-    if _, err := os.Stat("../lexica/" + name); err == nil { return "../lexica/" + name }
-    if _, err := os.Stat("../../lexica/" + name); err == nil { return "../../lexica/" + name }
+    if p := filepath.Join("lexica", name); statExists(p) { return p }
+    if p := filepath.Join("..", "lexica", name); statExists(p) { return p }
+    if p := filepath.Join("..", "..", "lexica", name); statExists(p) { return p }
     // Try lexica/gaddag/ subfolder variants
-    if _, err := os.Stat("lexica/gaddag/" + name); err == nil { return "lexica/gaddag/" + name }
-    if _, err := os.Stat("../lexica/gaddag/" + name); err == nil { return "../lexica/gaddag/" + name }
-    if _, err := os.Stat("../../lexica/gaddag/" + name); err == nil { return "../../lexica/gaddag/" + name }
+    if p := filepath.Join("lexica", "gaddag", name); statExists(p) { return p }
+    if p := filepath.Join("..", "lexica", "gaddag", name); statExists(p) { return p }
+    if p := filepath.Join("..", "..", "lexica", "gaddag", name); statExists(p) { return p }
     // Try cwd/../.. resolved to absolute
     if wd, err := os.Getwd(); err == nil {
-        base := wd
+        base := filepath.ToSlash(wd)
         if strings.HasSuffix(base, "/duplicate-tournament-manager/backend") {
-            cand := base + "/../../" + name
-            if _, err := os.Stat(cand); err == nil { return cand }
+            cand := filepath.Join(wd, "..", "..", name)
+            if statExists(cand) { return cand }
         }
         if strings.HasSuffix(base, "/duplicate-tournament-manager") {
-            cand := base + "/../" + name
-            if _, err := os.Stat(cand); err == nil { return cand }
-            cand2 := base + "/../lexica/" + name
-            if _, err := os.Stat(cand2); err == nil { return cand2 }
+            cand := filepath.Join(wd, "..", name)
+            if statExists(cand) { return cand }
+            cand2 := filepath.Join(wd, "..", "lexica", name)
+            if statExists(cand2) { return cand2 }
         }
     }
     return ""

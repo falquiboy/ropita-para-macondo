@@ -1933,7 +1933,9 @@ async function refreshUnseenAtTurn(n){
           if (!tnPos) { root.innerHTML = '<em>Sin posición</em>'; return; }
           const threads = Math.max(1, parseInt(document.getElementById('matchSimThreads')?.value||'1',10)||1);
           const perspective = currentUnseenPerspective();
-          const qs = new URLSearchParams({ mode:'sim', iters:'2000', plies:'5', topK:'75', threads:String(threads) });
+          const deep = analysisModeActive();
+          const qs = new URLSearchParams({ mode:'sim', iters: deep?'10000':'2000', plies: deep?'7':'5', topK: deep?'40':'75', threads:String(threads) });
+          if (deep) qs.set('deep', '1');
           if (perspective) qs.set('player', perspective === 'onturn' ? 'onturn' : 'you');
           const r = await fetch(`/matches/${matchId}/moves?turn=${tnTurn}&${qs.toString()}`);
           const j = await r.json(); if (j && j.error){ root.innerHTML = `<span style=\"color:#b91c1c\">${j.error}</span>`; return; }

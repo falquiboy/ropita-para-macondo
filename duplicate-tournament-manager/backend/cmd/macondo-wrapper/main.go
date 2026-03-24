@@ -327,8 +327,8 @@ func main() {
         if _, err := os.Stat(dst); err != nil {
             // Try to locate from common repo paths
             roots := []string{
-                "../../" + lexicon + ".kwg",
-                "../" + lexicon + ".kwg",
+                filepath.Join("..", "..", lexicon+".kwg"),
+                filepath.Join("..", lexicon+".kwg"),
                 lexicon + ".kwg",
                 filepath.Join("..", "..", "lexica", lexicon+".kwg"),
                 filepath.Join("lexica", lexicon+".kwg"),
@@ -353,8 +353,8 @@ func main() {
             candidates := []string{"FISE2016_converted.kwg", "FILE2017.kwg"}
             for _, cand := range candidates {
                 roots := []string{
-                    "../../" + cand,
-                    "../" + cand,
+                    filepath.Join("..", "..", cand),
+                    filepath.Join("..", cand),
                     cand,
                     filepath.Join("..", "..", "lexica", cand),
                     filepath.Join("lexica", cand),
